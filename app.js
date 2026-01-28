@@ -1618,6 +1618,9 @@
 
       const actionBtn = e.target.closest?.("[data-action]");
       if (!actionBtn) return;
+      
+      // Skip menu items - they're handled by wireMenus()
+      if (actionBtn.getAttribute("role") === "menuitem") return;
 
       const action = actionBtn.dataset.action;
       handleAction(action, actionBtn.dataset);
