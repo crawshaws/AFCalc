@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Alchemy Factory Planner (Offline)</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="menubar" role="banner">
+      <div class="menu">
+        <button class="menu__button" type="button" aria-haspopup="true" aria-expanded="false" data-menu="file">
+          File
+        </button>
+        <div class="menu__dropdown" role="menu" data-menu-dropdown="file">
+          <button type="button" role="menuitem" data-action="file:new">New (clear local data)</button>
+          <button type="button" role="menuitem" data-action="file:export">Export Database…</button>
+          <button type="button" role="menuitem" data-action="file:export-full">Export Full State…</button>
+          <button type="button" role="menuitem" data-action="file:import">Import JSON…</button>
+          <button type="button" role="menuitem" data-action="file:validate">Validate Build…</button>
+          <button type="button" role="menuitem" data-action="file:clear-build">Clear Build Canvas</button>
+        </div>
+      </div>
+      <div class="menu">
+        <button class="menu__button" type="button" aria-haspopup="true" aria-expanded="false" data-menu="edit">
+          Edit
+        </button>
+        <div class="menu__dropdown" role="menu" data-menu-dropdown="edit">
+          <button type="button" role="menuitem" data-action="edit:skills">Skill Points...</button>
+          <button type="button" role="menuitem" data-action="edit:undo" disabled title="Coming soon">Undo</button>
+          <button type="button" role="menuitem" data-action="edit:redo" disabled title="Coming soon">Redo</button>
+        </div>
+      </div>
+      <div class="skillsBar" id="skillsBar">
+        <!-- Skills will be rendered here -->
+      </div>
+      <div class="menubar__spacer"></div>
+      <div class="menubar__status" id="statusText" aria-live="polite"></div>
+    </header>
+
+    <main class="layout" role="main">
+      <aside class="sidebar" aria-label="Database editor">
+        <div class="sidebar__header">
+          <div class="appTitle">
+            <div class="appTitle__name">Alchemy Factory Planner</div>
+            <div class="appTitle__hint">Offline • Saved to localStorage</div>
+          </div>
+        </div>
+
+        <nav class="tabs" aria-label="Database tabs">
+          <button class="tab is-active" type="button" data-tab="materials">Materials</button>
+          <button class="tab" type="button" data-tab="machines">Machines</button>
+        </nav>
+
+        <section class="panel" data-panel="materials">
+          <div class="panel__toolbar">
+            <input class="input" id="materialSearch" type="search" placeholder="Search materials…" />
+            <button class="btn btn--primary" type="button" id="addMaterialBtn">+ Add</button>
+          </div>
+          <div class="dropdownSelector" data-dropdown="materials">
+            <div class="dropdownSelector__current" data-dropdown-toggle="materials">
+              <div class="dropdownSelector__placeholder">Select a material...</div>
+              <div class="dropdownSelector__arrow">▼</div>
+            </div>
+            <div class="dropdownSelector__list hidden" id="materialsList" aria-label="Materials list"></div>
+          </div>
+          <div class="editor" id="materialEditor" aria-label="Material editor">
+            <div class="emptyState">Select a material or click "Add".</div>
+          </div>
+        </section>
+
+        <section class="panel hidden" data-panel="machines">
+          <div class="panel__toolbar">
+            <input class="input" id="machineSearch" type="search" placeholder="Search machines…" />
+            <button class="btn btn--primary" type="button" id="addMachineBtn">+ Add</button>
+          </div>
+          <div class="dropdownSelector" data-dropdown="machines">
+            <div class="dropdownSelector__current" data-dropdown-toggle="machines">
+              <div class="dropdownSelector__placeholder">Select a machine...</div>
+              <div class="dropdownSelector__arrow">▼</div>
+            </div>
+            <div class="dropdownSelector__list hidden" id="machinesList" aria-label="Machines list"></div>
+          </div>
+          <div class="editor" id="machineEditor" aria-label="Machine editor">
+            <div class="emptyState">Select a machine or click "Add".</div>
+          </div>
+        </section>
+
+      </aside>
+
+      <section class="canvas" aria-label="Design canvas">
+        <div class="canvas__header">
+          <div style="flex: 1;">
+            <div class="canvas__title">Design Canvas</div>
+            <div class="canvas__subtitle" id="canvasSubtitle">Conveyor Speed: 60/min</div>
+          </div>
+          <button class="btn" type="button" data-action="canvas:show-production">📊 Production Summary</button>
+        </div>
+        <div class="canvas__surface" id="designCanvas">
+          <div class="canvas__placeholder">
+            This area will become the factory layout canvas.
+            <div class="canvas__placeholderSub">For now, use the left panel to build your Materials/Recipes and Machines database.</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <input id="importFileInput" class="hidden" type="file" accept="application/json,.json" />
+    
+    <!-- Production Summary Dialog -->
+    <div id="productionDialog" class="dialog hidden">
+      <div class="dialog__overlay"></div>
+      <div class="dialog__content">
+        <div class="dialog__header">
+          <h2 class="dialog__title">Production Summary</h2>
+          <button class="btn btn--sm" data-action="dialog:close">✕</button>
+        </div>
+        <div class="dialog__body">
+          <div id="productionSummary">
+            <!-- Production summary will be rendered here -->
+          </div>
+        </div>
+        <div class="dialog__footer">
+          <button class="btn" data-action="dialog:close">Close</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Skills Dialog -->
+    <div id="skillsDialog" class="dialog hidden">
+      <div class="dialog__overlay"></div>
+      <div class="dialog__content">
+        <div class="dialog__header">
+          <h2 class="dialog__title">Skill Points</h2>
+          <button class="btn btn--sm" data-action="dialog:close">✕</button>
+        </div>
+        <div class="dialog__body">
+          <div class="skillsList" id="skillsList">
+            <!-- Skills will be rendered here -->
+          </div>
+        </div>
+        <div class="dialog__footer">
+          <button class="btn btn--primary" data-action="skills:save">Save</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Storage Selection Dialog -->
+    <div id="storageSelectionDialog" class="dialog hidden">
+      <div class="dialog__overlay"></div>
+      <div class="dialog__content">
+        <div class="dialog__header">
+          <h2 class="dialog__title">Select Storage Type</h2>
+          <button class="btn btn--sm" data-action="dialog:close">✕</button>
+        </div>
+        <div class="dialog__body">
+          <div id="storageTypesList">
+            <!-- Storage types will be rendered here -->
+          </div>
+        </div>
+        <div class="dialog__footer">
+          <button class="btn" data-action="dialog:close">Cancel</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Manual Storage Material Dialog -->
+    <div id="manualStorageDialog" class="dialog hidden">
+      <div class="dialog__overlay"></div>
+      <div class="dialog__content">
+        <div class="dialog__header">
+          <h2 class="dialog__title">Add Material to Storage</h2>
+          <button class="btn btn--sm" data-action="dialog:close">✕</button>
+        </div>
+        <div class="dialog__body">
+          <form id="manualStorageForm">
+            <div class="field">
+              <label>Material</label>
+              <select name="materialId" required>
+                <option value="">(select material)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Number of Slots</label>
+              <input name="slotsAllocated" type="number" min="1" required />
+              <div class="hint">How many storage slots this material occupies</div>
+            </div>
+            <div class="field">
+              <label>Current Amount (items)</label>
+              <input name="currentAmount" type="number" min="0" required />
+              <div class="hint">Total number of items currently stored</div>
+            </div>
+          </form>
+        </div>
+        <div class="dialog__footer">
+          <button class="btn" data-action="dialog:close">Cancel</button>
+          <button class="btn btn--primary" data-action="storage:save-manual">Add</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Add Topper Dialog -->
+    <div id="addTopperDialog" class="dialog hidden">
+      <div class="dialog__overlay"></div>
+      <div class="dialog__content">
+        <div class="dialog__header">
+          <h2 class="dialog__title">Add Topper to Heating Device</h2>
+          <button class="btn btn--sm" data-action="dialog:close">✕</button>
+        </div>
+        <div class="dialog__body">
+          <form id="addTopperForm">
+            <div class="field">
+              <label>Topper Machine</label>
+              <select name="topperMachineId" required>
+                <option value="">(select topper machine)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Recipe (optional)</label>
+              <select name="topperRecipeId">
+                <option value="">(no recipe)</option>
+              </select>
+            </div>
+          </form>
+        </div>
+        <div class="dialog__footer">
+          <button class="btn" data-action="dialog:close">Cancel</button>
+          <button class="btn btn--primary" data-action="heating:save-topper">Add Topper</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Templates for forms -->
+    <template id="materialFormTemplate">
+      <form class="form" data-form="material">
+        <div class="row">
+          <div class="field">
+            <label>Name</label>
+            <input name="name" data-bind="name" required />
+          </div>
+          <div class="field">
+            <label>Fuel value (Pyra / P)</label>
+            <input name="fuelValue" data-bind="fuelValue" inputmode="decimal" placeholder="(blank = none)" />
+            <div class="hint">Only used if "Is Fuel" is checked.</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label>Buy price</label>
+            <input name="buyPrice" data-bind="buyPrice" inputmode="decimal" placeholder="(blank = not buyable)" />
+          </div>
+          <div class="field">
+            <label>Sale price</label>
+            <input name="salePrice" data-bind="salePrice" inputmode="decimal" placeholder="(blank = not sellable)" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Stack Size</label>
+          <input name="stackSize" data-bind="stackSize" inputmode="numeric" placeholder="1" />
+          <div class="hint">Number of items per storage slot (default: 1)</div>
+        </div>
+
+        <label class="checkboxRow">
+          <input type="checkbox" name="isFuel" data-bind="isFuel" />
+          <div>
+            <div><strong>Is Fuel</strong></div>
+            <div class="hint">Marks this material as usable as fuel.</div>
+          </div>
+        </label>
+
+        <label class="checkboxRow">
+          <input type="checkbox" name="isFertilizer" data-bind="isFertilizer" />
+          <div>
+            <div><strong>Is Fertilizer</strong></div>
+            <div class="hint">Marks this material as usable as fertilizer.</div>
+          </div>
+        </label>
+
+        <div class="row" data-fertilizer-fields style="display: none;">
+          <div class="field">
+            <label>Nutrient Value (V)</label>
+            <input name="fertilizerNutrientValue" data-bind="fertilizerNutrientValue" inputmode="decimal" placeholder="(blank = none)" />
+            <div class="hint">Total nutrients provided by this fertilizer (Vita / V)</div>
+          </div>
+          <div class="field">
+            <label>Max Fertility (V/s)</label>
+            <input name="fertilizerMaxFertility" data-bind="fertilizerMaxFertility" inputmode="decimal" placeholder="(blank = none)" />
+            <div class="hint">Fertility rate provided by this fertilizer (Vita per second)</div>
+          </div>
+        </div>
+
+        <label class="checkboxRow">
+          <input type="checkbox" name="isPlant" data-bind="isPlant" />
+          <div>
+            <div><strong>Is Plant</strong></div>
+            <div class="hint">Marks this material as a plant that can be grown.</div>
+          </div>
+        </label>
+
+        <div class="field" data-plant-field style="display: none;">
+          <label>Required Nutrient (V)</label>
+          <input name="plantRequiredNutrient" data-bind="plantRequiredNutrient" inputmode="decimal" placeholder="(blank = none)" />
+          <div class="hint">Nutrients required to grow this plant (Vita / V)</div>
+        </div>
+
+        <div class="field">
+          <label>Realized Cost (calculated)</label>
+          <div style="padding: 8px; background: #2a2a2a; border-radius: 4px; font-family: monospace;" data-bind="realizedCost">—</div>
+          <div class="hint">Minimum cost based on buy price or production recipes.</div>
+        </div>
+
+        <div class="editor__actions">
+          <button class="btn btn--danger" type="button" data-action="material:delete">Delete</button>
+          <button class="btn btn--primary" type="submit">Save</button>
+        </div>
+      </form>
+      
+      <div class="subsection" style="margin-top: 16px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+          <div class="subsection__title">Recipes that produce this material</div>
+          <button class="btn btn--primary" type="button" data-action="material:add-recipe" style="font-size: 12px; padding: 6px 10px;">+ Add Recipe</button>
+        </div>
+        <div data-recipes-list></div>
+      </div>
+    </template>
+
+    <template id="machineFormTemplate">
+      <form class="form" data-form="machine">
+        <div class="row">
+          <div class="field">
+            <label>Name</label>
+            <input name="name" data-bind="name" required />
+          </div>
+          <div class="field">
+            <label>Kind</label>
+            <select name="kind" data-bind="kind">
+              <option value="standard">Standard</option>
+              <option value="heating_device">Heating Device</option>
+              <option value="storage">Storage</option>
+              <option value="nursery">Nursery</option>
+            </select>
+            <div class="hint">Heating Device is used for builds with toppers. Storage buffers materials. Nursery grows plants.</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label>Number of inputs</label>
+            <input name="inputs" data-bind="inputs" inputmode="numeric" />
+          </div>
+          <div class="field">
+            <label>Number of outputs</label>
+            <input name="outputs" data-bind="outputs" inputmode="numeric" />
+          </div>
+        </div>
+
+        <div class="subsection" data-standard-section>
+          <div class="subsection__title">Heat</div>
+          <label class="checkboxRow">
+            <input type="checkbox" name="requiresFurnace" data-bind="requiresFurnace" />
+            <div>
+              <div><strong>Requires Heating Device</strong></div>
+              <div class="hint">If checked, this machine must be placed on a Heating Device and consumes heat (Pyra / P).</div>
+            </div>
+          </label>
+          <div class="row">
+            <div class="field">
+              <label>Heat consumption value (Pyra / P per second)</label>
+              <input name="heatConsumptionP" data-bind="heatConsumptionP" inputmode="decimal" placeholder="(blank = none)" />
+              <div class="hint">Example: Crucible is 4P. This is used for heating device burn calculations.</div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label>Footprint Width (tiles)</label>
+              <input name="footprintWidth" data-bind="footprintWidth" inputmode="numeric" placeholder="(blank = 1)" />
+              <div class="hint">Width in tiles when placed on heating device. Example: Crucible is 1 tile wide.</div>
+            </div>
+            <div class="field">
+              <label>Footprint Length (tiles)</label>
+              <input name="footprintLength" data-bind="footprintLength" inputmode="numeric" placeholder="(blank = 1)" />
+              <div class="hint">Length in tiles when placed on heating device. Example: Crucible is 2 tiles long.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="subsection hidden" data-heating-device-section>
+          <div class="subsection__title">Heating Device Settings</div>
+          <div class="field">
+            <label>Base heat consumption (Pyra / P per second)</label>
+            <input name="baseHeatConsumptionP" data-bind="baseHeatConsumptionP" inputmode="decimal" />
+            <div class="hint">Base heat consumption for the heating device itself (typically 1P). Toppers (Crucibles, Kiln, Smelter) are configured during build planning.</div>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label>Heating Area Width (tiles)</label>
+              <input name="heatingAreaWidth" data-bind="heatingAreaWidth" inputmode="numeric" />
+              <div class="hint">Width of heating surface in tiles. Example: Furnace is 3 tiles wide.</div>
+            </div>
+            <div class="field">
+              <label>Heating Area Length (tiles)</label>
+              <input name="heatingAreaLength" data-bind="heatingAreaLength" inputmode="numeric" />
+              <div class="hint">Length of heating surface in tiles. Example: Furnace is 3 tiles long.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="subsection hidden" data-storage-section>
+          <div class="subsection__title">Storage Configuration</div>
+          <div class="field">
+            <label>Number of storage slots</label>
+            <input name="storageSlots" data-bind="storageSlots" inputmode="numeric" />
+            <div class="hint">How many item stacks this storage can hold</div>
+          </div>
+        </div>
+
+        <div class="editor__actions">
+          <button class="btn btn--danger" type="button" data-action="machine:delete">Delete</button>
+          <div style="flex: 1;"></div>
+          <button class="btn" type="button" data-action="machine:add-to-canvas">+ Add to Canvas</button>
+          <button class="btn btn--primary" type="submit">Save</button>
+        </div>
+      </form>
+    </template>
+
+    <template id="recipeFormTemplate">
+      <form class="form" data-form="recipe">
+        <div class="row">
+          <div class="field">
+            <label>Name</label>
+            <input name="name" data-bind="name" required />
+          </div>
+          <div class="field">
+            <label>Processing time</label>
+            <input name="processingTimeSec" data-bind="processingTimeSec" placeholder="e.g. 2m30s or 150" />
+            <div class="hint">Enter as seconds (150) or time format (2m30s, 1m, 45s)</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label>Machine</label>
+            <select name="machineId" data-bind="machineId" required data-recipe-machine-select>
+              <option value="">(select machine)</option>
+              <!-- Machine options will be populated dynamically -->
+            </select>
+            <div class="hint">Example: Charcoal Powder is made in a Grinder. Inputs/outputs auto-populate based on machine.</div>
+          </div>
+          <div class="field">
+            <label>Heat consumption override (Pyra / P per second)</label>
+            <input name="heatConsumptionP" data-bind="heatConsumptionP" inputmode="decimal" placeholder="(blank = none)" />
+            <div class="hint">Optional (for future heat/fuel calculations); leave blank if unsure.</div>
+          </div>
+        </div>
+
+        <div class="subsection">
+          <div class="subsection__title">Inputs (item count)</div>
+          <div class="ioList" data-io-list="inputs">
+            <!-- Input rows will be populated dynamically -->
+          </div>
+        </div>
+
+        <div class="subsection">
+          <div class="subsection__title">Outputs (item count)</div>
+          <div class="ioList" data-io-list="outputs">
+            <!-- Output rows will be populated dynamically -->
+          </div>
+        </div>
+
+        <div class="editor__actions">
+          <button class="btn btn--danger" type="button" data-action="recipe:delete">Delete</button>
+          <button class="btn btn--primary" type="submit">Save</button>
+        </div>
+      </form>
+    </template>
+
+    <template id="ioRowTemplate">
+      <div class="ioRow">
+        <div class="field">
+          <label>Material</label>
+          <select data-bind="materialId">
+            <option value="">(select material)</option>
+            <!-- Material options will be populated dynamically -->
+          </select>
+        </div>
+        <div class="field">
+          <label>Items</label>
+          <input data-bind="items" inputmode="decimal" />
+          <div class="hint" data-bind="rateHint">0.00 per minute</div>
+        </div>
+      </div>
+    </template>
+
+    <template id="recipeCardTemplate">
+      <div class="recipeCard" data-recipe-card>
+        <div class="recipeCard__header" data-recipe-toggle>
+          <div class="recipeCard__info">
+            <div class="recipeCard__title" data-bind="recipeName"></div>
+            <div class="recipeCard__meta" data-bind="recipeMeta"></div>
+          </div>
+          <div class="recipeCard__actions">
+            <button class="btn btn--danger btn--sm" type="button" data-action="recipe:delete" title="Delete recipe">✕</button>
+            <div class="recipeCard__arrow">▼</div>
+          </div>
+        </div>
+        <div class="recipeCard__body hidden" data-recipe-body>
+          <!-- Recipe form will be inserted here -->
+        </div>
+      </div>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
+
