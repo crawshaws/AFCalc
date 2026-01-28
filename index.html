@@ -31,6 +31,17 @@
           <button type="button" role="menuitem" data-action="edit:redo" disabled title="Coming soon">Redo</button>
         </div>
       </div>
+      <div class="toolbar">
+        <button class="btn btn--icon" type="button" data-action="blueprint:create" title="Create Blueprint from Selection" disabled id="createBlueprintBtn">
+          📐
+        </button>
+        <button class="btn btn--icon" type="button" data-action="sidebar:toggle-database" title="Toggle Database Panel">
+          📚
+        </button>
+        <button class="btn btn--icon" type="button" data-action="sidebar:toggle-blueprints" title="Toggle Blueprints Panel">
+          📋
+        </button>
+      </div>
       <div class="skillsBar" id="skillsBar">
         <!-- Skills will be rendered here -->
       </div>
@@ -39,7 +50,7 @@
     </header>
 
     <main class="layout" role="main">
-      <aside class="sidebar" aria-label="Database editor">
+      <aside class="sidebar" id="databaseSidebar" aria-label="Database editor">
         <div class="sidebar__header">
           <div class="appTitle">
             <div class="appTitle__name">Alchemy Factory Planner</div>
@@ -88,13 +99,32 @@
 
       </aside>
 
+      <aside class="sidebar sidebar--blueprints hidden" id="blueprintsSidebar" aria-label="Blueprints">
+        <div class="sidebar__header">
+          <div class="appTitle">
+            <div class="appTitle__name">Blueprints</div>
+            <div class="appTitle__hint">Reusable factory components</div>
+          </div>
+        </div>
+
+        <div class="panel__toolbar">
+          <input class="input" id="blueprintSearch" type="search" placeholder="Search blueprints…" />
+        </div>
+        
+        <div class="blueprintsList" id="blueprintsList">
+          <div class="emptyState">No blueprints yet. Select machines and click 📐 to create one.</div>
+        </div>
+      </aside>
+
       <section class="canvas" aria-label="Design canvas">
         <div class="canvas__header">
           <div style="flex: 1;">
             <div class="canvas__title">Design Canvas</div>
             <div class="canvas__subtitle" id="canvasSubtitle">Conveyor Speed: 60/min</div>
           </div>
-          <button class="btn" type="button" data-action="canvas:show-production">📊 Production Summary</button>
+          <button class="btn" type="button" data-action="canvas:reset-camera" title="Reset camera to origin (0,0) and 100% zoom">🏠 Home</button>
+          <button class="btn" type="button" data-action="canvas:center-all" title="Center camera on all machines">🎯 Center All</button>
+          <button class="btn" type="button" data-action="canvas:toggle-production">📊 Production Summary</button>
         </div>
         <div class="canvas__surface" id="designCanvas">
           <div class="canvas__placeholder">
@@ -103,25 +133,47 @@
           </div>
         </div>
       </section>
-    </main>
 
-    <input id="importFileInput" class="hidden" type="file" accept="application/json,.json" />
-    
-    <!-- Production Summary Dialog -->
-    <div id="productionDialog" class="dialog hidden">
-      <div class="dialog__overlay"></div>
-      <div class="dialog__content">
-        <div class="dialog__header">
-          <h2 class="dialog__title">Production Summary</h2>
-          <button class="btn btn--sm" data-action="dialog:close">✕</button>
+      <aside class="sidebar sidebar--production hidden" id="productionSidebar" aria-label="Production Summary">
+        <div class="sidebar__header">
+          <div class="appTitle">
+            <div class="appTitle__name">Production Summary</div>
+            <div class="appTitle__hint">Factory-wide analysis</div>
+          </div>
         </div>
-        <div class="dialog__body">
+        <div class="sidebar__body">
           <div id="productionSummary">
             <!-- Production summary will be rendered here -->
           </div>
         </div>
+      </aside>
+    </main>
+
+    <input id="importFileInput" class="hidden" type="file" accept="application/json,.json" />
+    
+    <!-- Jump to Coordinates Dialog -->
+    <div id="jumpToCoordinatesDialog" class="dialog hidden">
+      <div class="dialog__overlay"></div>
+      <div class="dialog__content">
+        <div class="dialog__header">
+          <h2 class="dialog__title">Jump to Coordinates</h2>
+          <button class="btn btn--sm" data-action="dialog:close">✕</button>
+        </div>
+        <div class="dialog__body">
+          <div style="display: flex; gap: 12px; align-items: flex-end;">
+            <div class="field" style="flex: 1;">
+              <label>X Coordinate</label>
+              <input type="number" id="jumpToX" placeholder="0" style="width: 100%;">
+            </div>
+            <div class="field" style="flex: 1;">
+              <label>Y Coordinate</label>
+              <input type="number" id="jumpToY" placeholder="0" style="width: 100%;">
+            </div>
+          </div>
+        </div>
         <div class="dialog__footer">
-          <button class="btn" data-action="dialog:close">Close</button>
+          <button class="btn" data-action="dialog:close">Cancel</button>
+          <button class="btn btn--primary" data-action="canvas:jump-to-coords">Jump</button>
         </div>
       </div>
     </div>
@@ -510,6 +562,71 @@
         </div>
       </div>
     </template>
+
+    <!-- Create Blueprint Dialog -->
+    <div id="createBlueprintDialog" class="dialog hidden">
+      <div class="dialog__overlay"></div>
+      <div class="dialog__content">
+        <div class="dialog__header">
+          <h2 class="dialog__title">Create Blueprint</h2>
+          <button class="btn btn--sm" data-action="dialog:close">✕</button>
+        </div>
+        <div class="dialog__body">
+          <div class="field">
+            <label for="blueprintName">Name <span style="color: var(--danger)">*</span></label>
+            <input type="text" id="blueprintName" placeholder="e.g. Iron Smelting Array" required style="width: 100%;">
+          </div>
+          <div class="field">
+            <label for="blueprintDescription">Description</label>
+            <textarea id="blueprintDescription" placeholder="Optional description..." rows="3" style="width: 100%; resize: vertical;"></textarea>
+          </div>
+          <div class="field">
+            <label>Included Machines</label>
+            <div id="blueprintIncludedMachines" style="max-height: 200px; overflow-y: auto; border: 1px solid rgba(255,255,255,.08); border-radius: 4px; padding: 8px;">
+              <!-- Will be populated with machine list -->
+            </div>
+          </div>
+          <div class="field">
+            <label>Blueprint Inputs</label>
+            <div id="blueprintInputs" style="font-size: 12px; color: var(--muted);">
+              <!-- Will show calculated inputs -->
+            </div>
+          </div>
+          <div class="field">
+            <label>Blueprint Outputs</label>
+            <div id="blueprintOutputs" style="font-size: 12px; color: var(--muted);">
+              <!-- Will show calculated outputs -->
+            </div>
+          </div>
+        </div>
+        <div class="dialog__footer">
+          <button class="btn" data-action="dialog:close">Cancel</button>
+          <button class="btn btn--primary" data-action="blueprint:save">Create Blueprint</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Blueprint Selection Dialog -->
+    <div id="blueprintSelectionDialog" class="dialog hidden">
+      <div class="dialog__overlay"></div>
+      <div class="dialog__content">
+        <div class="dialog__header">
+          <h2 class="dialog__title">Select Blueprint to Add</h2>
+          <button class="btn btn--sm" data-action="dialog:close">✕</button>
+        </div>
+        <div class="dialog__body">
+          <div class="field">
+            <input type="search" id="blueprintSelectionSearch" placeholder="Search blueprints..." style="width: 100%;" />
+          </div>
+          <div id="blueprintSelectionList" style="max-height: 400px; overflow-y: auto;">
+            <!-- Blueprint options will be rendered here -->
+          </div>
+        </div>
+        <div class="dialog__footer">
+          <button class="btn" data-action="dialog:close">Cancel</button>
+        </div>
+      </div>
+    </div>
 
     <script src="./app.js"></script>
   </body>

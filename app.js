@@ -10,6 +10,7 @@
   const STORAGE_KEY = "af_planner_db_v1";
   const BUILD_STORAGE_KEY = "af_planner_build_v1";
   const SKILLS_STORAGE_KEY = "af_planner_skills_v1";
+  const UI_PREFS_STORAGE_KEY = "af_planner_ui_prefs_v1";
   const SCHEMA_VERSION = 1;
   
   // Game constants
@@ -28,19 +29,31 @@
         materials: "",
         machines: "",
       },
+      sidebars: {
+        database: true,
+        blueprints: false,
+        production: false,
+      },
       statusTimer: null,
       pendingStorageCoords: null,
       pendingManualStorageMachineId: null,
       pendingStorageReplacementId: null,
       pendingHeatingDeviceId: null,
+      pendingBlueprintCoords: null,
       dragState: null, // For canvas dragging and connection preview
+      justCompletedSelection: false, // Flag to prevent click from clearing selection after drag-select
+      productionSummaryDebounceTimer: null, // Debounce timer for production summary recalculation
     },
     build: {
       placedMachines: [], // Array of placed machine instances on canvas
       connections: [], // Array of conveyor connections
-      selectedMachine: null, // Currently selected machine on canvas
+      selectedMachines: [], // Array of selected machine IDs (supports multi-select)
       selectedConnection: null, // Currently selected connection on canvas
+      camera: { x: 0, y: 0, zoom: 1.0 }, // Camera position (world coords at viewport center) and zoom level
     },
+    blueprintEditStack: [], // Stack of canvas states when editing blueprints recursively
+    currentBlueprintEdit: null, // { blueprintId, instanceId (if editing a placed instance), parentInstanceId (for nested edits) }
+    blueprintMachineCountCache: {}, // Cache for recursive blueprint machine counts { blueprintId: { totalCount, breakdown: { machineId: count } } }
     skills: {
       conveyorSpeed: 0, // Each point = +15p/m speed bonus - Base 60p/m
       throwingSpeed: 0, // Each point = +15p/m speed bonus - Base 60p/m
@@ -113,6 +126,7 @@
       materials: [],
       machines: [],
       recipes: [],
+      blueprints: [],
     };
   }
 
@@ -137,11 +151,34 @@
     }
   }
   
+  /**
+   * Save the build to localStorage
+   * IMPORTANT: Blueprint editing is an in-memory operation only.
+   * When in blueprint edit mode, this saves the MAIN canvas (from the bottom of the edit stack),
+   * NOT the current blueprint being edited. This ensures that refreshing the page always
+   * loads the main canvas, and edits are only persisted when explicitly saved via
+   * saveBlueprintEdit() or saveBlueprintAsNew().
+   */
   function saveBuild() {
-    const buildData = {
-      placedMachines: state.build.placedMachines,
-      connections: state.build.connections,
-    };
+    let buildData;
+    
+    if (state.blueprintEditStack.length > 0) {
+      // We're in blueprint edit mode - save the main canvas (bottom of stack)
+      const mainCanvasState = state.blueprintEditStack[0];
+      buildData = {
+        placedMachines: mainCanvasState.placedMachines,
+        connections: mainCanvasState.connections,
+        camera: mainCanvasState.camera,
+      };
+    } else {
+      // Normal mode - save current canvas
+      buildData = {
+        placedMachines: state.build.placedMachines,
+        connections: state.build.connections,
+        camera: state.build.camera,
+      };
+    }
+    
     localStorage.setItem(BUILD_STORAGE_KEY, JSON.stringify(buildData, null, 2));
   }
   
@@ -362,20 +399,67 @@
       
       const connections = Array.isArray(parsed.connections) ? parsed.connections : [];
       
+      // Load camera state or use defaults
+      const camera = parsed.camera && typeof parsed.camera === 'object'
+        ? {
+            x: Number(parsed.camera.x) || 0,
+            y: Number(parsed.camera.y) || 0,
+            zoom: Number(parsed.camera.zoom) || 1.0
+          }
+        : { x: 0, y: 0, zoom: 1.0 };
+      
       // Validate the build
       const issues = validateBuild(placedMachines, connections);
       if (issues.length > 0) {
         showValidationWarning(issues, 'saved build');
       }
       
-      return { placedMachines, connections };
+      return { placedMachines, connections, camera };
     } catch {
-      return { placedMachines: [], connections: [] };
+      return { placedMachines: [], connections: [], camera: { x: 0, y: 0, zoom: 1.0 } };
     }
   }
   
   function saveSkills() {
     localStorage.setItem(SKILLS_STORAGE_KEY, JSON.stringify(state.skills, null, 2));
+  }
+  
+  function saveUIPrefs() {
+    const prefs = {
+      sidebars: state.ui.sidebars,
+    };
+    localStorage.setItem(UI_PREFS_STORAGE_KEY, JSON.stringify(prefs, null, 2));
+  }
+  
+  function loadUIPrefs() {
+    const raw = localStorage.getItem(UI_PREFS_STORAGE_KEY);
+    if (!raw) {
+      return {
+        sidebars: {
+          database: true,
+          blueprints: false,
+          production: false,
+        },
+      };
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      return {
+        sidebars: parsed.sidebars || {
+          database: true,
+          blueprints: false,
+          production: false,
+        },
+      };
+    } catch {
+      return {
+        sidebars: {
+          database: true,
+          blueprints: false,
+          production: false,
+        },
+      };
+    }
   }
   
   function loadSkills() {
@@ -506,6 +590,7 @@
       materials: Array.isArray(db.materials) ? db.materials : [],
       machines: Array.isArray(db.machines) ? db.machines : [],
       recipes: Array.isArray(db.recipes) ? db.recipes : [],
+      blueprints: Array.isArray(db.blueprints) ? db.blueprints : [],
     };
     // Ensure required fields minimally exist for each item
     normalized.materials = normalized.materials
@@ -620,7 +705,8 @@
       database: state.db,
       build: {
         placedMachines: state.build.placedMachines,
-        connections: state.build.connections
+        connections: state.build.connections,
+        camera: state.build.camera
       },
       skills: state.skills
     };
@@ -662,7 +748,19 @@
       
       state.build.placedMachines = placedMachines;
       state.build.connections = connections;
-      state.build.selectedMachine = null;
+      state.build.selectedMachines = [];
+      
+      // Import camera if present, otherwise use defaults
+      if (parsed.build.camera && typeof parsed.build.camera === 'object') {
+        state.build.camera = {
+          x: Number(parsed.build.camera.x) || 0,
+          y: Number(parsed.build.camera.y) || 0,
+          zoom: Number(parsed.build.camera.zoom) || 1.0
+        };
+      } else {
+        state.build.camera = { x: 0, y: 0, zoom: 1.0 };
+      }
+      
       saveBuild();
       
       // Import skills if present
@@ -980,6 +1078,8 @@
     renderMaterials();
     renderMachines();
     renderSkillsBar();
+    renderBlueprintsList();
+    updateCreateBlueprintButton();
   }
 
   function renderTabs() {
@@ -1480,6 +1580,9 @@
       state.ui.filters.machines = e.target.value;
       renderMachines();
     });
+    $("#blueprintSelectionSearch")?.addEventListener("input", (e) => {
+      renderBlueprintSelectionList(e.target.value);
+    });
   }
 
   function wireAddButtons() {
@@ -1527,6 +1630,21 @@
 
   function wireListsAndForms() {
     document.addEventListener("click", (e) => {
+      // Handle blueprint edit action buttons in canvas subtitle
+      const bpActionBtn = e.target.closest?.("#canvasSubtitle [data-action]");
+      if (bpActionBtn) {
+        const action = bpActionBtn.dataset.action;
+        handleAction(action);
+        return;
+      }
+      
+      // Handle coordinates click (jump to coordinates)
+      const coordsSpan = e.target.closest?.(".canvas__coords");
+      if (coordsSpan) {
+        openJumpToCoordinatesDialog();
+        return;
+      }
+      
       // Handle dropdown toggle
       const dropdownToggle = e.target.closest?.("[data-dropdown-toggle]");
       if (dropdownToggle) {
@@ -1605,6 +1723,19 @@
           addStorageToCanvas(coords.x, coords.y, newMachineId);
           closeDialog();
           state.ui.pendingStorageCoords = null;
+        }
+        return;
+      }
+      
+      // Handle blueprint selection
+      const blueprintSelectItem = e.target.closest?.("[data-blueprint-select-id]");
+      if (blueprintSelectItem) {
+        const blueprintId = blueprintSelectItem.dataset.blueprintSelectId;
+        const coords = state.ui.pendingBlueprintCoords;
+        if (coords && blueprintId) {
+          placeBlueprintOnCanvas(blueprintId, coords.x, coords.y);
+          closeDialog();
+          state.ui.pendingBlueprintCoords = null;
         }
         return;
       }
@@ -1774,7 +1905,7 @@
         if (confirm("Clear all machines and connections from the build canvas?")) {
           state.build.placedMachines = [];
           state.build.connections = [];
-          state.build.selectedMachine = null;
+          state.build.selectedMachines = [];
           saveBuild();
           renderCanvas();
           setStatus("Build canvas cleared.");
@@ -1790,8 +1921,44 @@
       case "skills:save":
         saveSkillsFromDialog();
         return;
-      case "canvas:show-production":
-        showProductionDialog();
+      case "canvas:toggle-production":
+        toggleProductionSidebar();
+        return;
+      case "canvas:reset-camera":
+        state.build.camera = { x: 0, y: 0, zoom: 1.0 };
+        saveBuild();
+        renderCanvas();
+        setStatus("Camera reset to origin.");
+        return;
+      case "canvas:center-all":
+        centerAllMachinesAtOrigin();
+        return;
+      case "canvas:jump-to-coords":
+        jumpToCoordinates();
+        return;
+      case "sidebar:toggle-database":
+        toggleDatabaseSidebar();
+        return;
+      case "sidebar:toggle-blueprints":
+        toggleBlueprintsSidebar();
+        return;
+      case "blueprint:create":
+        openCreateBlueprintDialog();
+        return;
+      case "blueprint:save":
+        saveBlueprintFromDialog();
+        return;
+      case "blueprint:delete":
+        deleteBlueprint(data.blueprintDeleteId);
+        return;
+      case "blueprint:save-edit":
+        saveBlueprintEdit();
+        return;
+      case "blueprint:save-as-new":
+        saveBlueprintAsNew();
+        return;
+      case "blueprint:exit-edit":
+        exitBlueprintEditMode();
         return;
       case "storage:save-manual":
         saveManualStorageMaterial();
@@ -2084,10 +2251,80 @@
     if (!canvas) return;
     
     let contextMenu = null;
+    let rightClickStartPos = null; // Track right-click start position for context menu vs pan detection
     
-    // Right-click context menu
+    // Debounced save and sync for zoom
+    let zoomSaveTimer = null;
+    
+    // Mouse wheel zoom
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      
+      const zoomSensitivity = 0.001;
+      const minZoom = 0.1;
+      const maxZoom = 1.0;
+      
+      // Calculate new zoom level
+      const delta = -e.deltaY;
+      let newZoom = state.build.camera.zoom + (delta * zoomSensitivity);
+      newZoom = Math.max(minZoom, Math.min(maxZoom, newZoom));
+      
+      if (newZoom !== state.build.camera.zoom) {
+        // Get mouse position in world coordinates before zoom
+        const canvasRect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - canvasRect.left;
+        const mouseY = e.clientY - canvasRect.top;
+        const worldPosBefore = screenToWorld(mouseX, mouseY);
+        
+        // Apply zoom
+        state.build.camera.zoom = newZoom;
+        
+        // Get mouse position in world coordinates after zoom
+        const worldPosAfter = screenToWorld(mouseX, mouseY);
+        
+        // Adjust camera position to keep world position under mouse the same
+        state.build.camera.x += worldPosBefore.x - worldPosAfter.x;
+        state.build.camera.y += worldPosBefore.y - worldPosAfter.y;
+        
+        // Just update the transform, don't re-render
+        updateCameraTransform();
+        
+        // Debounced save and sync (wait for zoom to finish)
+        if (zoomSaveTimer) clearTimeout(zoomSaveTimer);
+        zoomSaveTimer = setTimeout(() => {
+          syncRenderAfterCameraMove();
+          saveBuild();
+        }, 300);
+      }
+    }, { passive: false });
+    
+    // Right-click: track start for pan vs context menu
+    canvas.addEventListener("mousedown", (e) => {
+      if (e.button === 2) { // Right mouse button
+        rightClickStartPos = { x: e.clientX, y: e.clientY };
+        e.preventDefault();
+      }
+    });
+    
+    // Right-click context menu (only if no drag occurred)
     canvas.addEventListener("contextmenu", (e) => {
       e.preventDefault();
+      
+      // Check if this was a drag (moved more than 5 pixels)
+      if (rightClickStartPos) {
+        const dragDistance = Math.sqrt(
+          Math.pow(e.clientX - rightClickStartPos.x, 2) +
+          Math.pow(e.clientY - rightClickStartPos.y, 2)
+        );
+        
+        if (dragDistance > 5) {
+          // Was a drag, don't show context menu
+          rightClickStartPos = null;
+          return;
+        }
+      }
+      
+      rightClickStartPos = null;
       
       // Remove existing context menu
       if (contextMenu) contextMenu.remove();
@@ -2113,13 +2350,19 @@
         <button class="contextMenu__item" data-action="canvas:add-nursery">
           <span>+ Add Nursery</span>
         </button>
+        <button class="contextMenu__item" data-action="canvas:add-blueprint">
+          <span>📐 Add Blueprint</span>
+        </button>
       `;
       document.body.appendChild(contextMenu);
       
-      // Store click position for machine placement
+      // Store click position for machine placement (in world coordinates)
       const canvasRect = canvas.getBoundingClientRect();
-      contextMenu.dataset.x = String(e.clientX - canvasRect.left + canvas.scrollLeft);
-      contextMenu.dataset.y = String(e.clientY - canvasRect.top + canvas.scrollTop);
+      const screenX = e.clientX - canvasRect.left;
+      const screenY = e.clientY - canvasRect.top;
+      const worldPos = screenToWorld(screenX, screenY);
+      contextMenu.dataset.x = String(worldPos.x);
+      contextMenu.dataset.y = String(worldPos.y);
       
       // Close context menu on any click
       setTimeout(() => {
@@ -2181,26 +2424,82 @@
           menu.remove();
         }
       }
+      if (e.target.closest("[data-action='canvas:add-blueprint']")) {
+        const menu = e.target.closest(".contextMenu");
+        if (menu) {
+          const x = parseFloat(menu.dataset.x);
+          const y = parseFloat(menu.dataset.y);
+          openBlueprintSelectionDialog(x, y);
+          menu.remove();
+        }
+      }
     });
     
-    // Mouse down - start dragging or connection
+    // Blueprint drag and drop
+    canvas.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    });
+    
+    canvas.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const blueprintId = e.dataTransfer.getData("blueprintId");
+      if (blueprintId) {
+        // Calculate drop position in world coordinates
+        const canvasRect = canvas.getBoundingClientRect();
+        const screenX = e.clientX - canvasRect.left;
+        const screenY = e.clientY - canvasRect.top;
+        const worldPos = screenToWorld(screenX, screenY);
+        
+        placeBlueprintOnCanvas(blueprintId, worldPos.x, worldPos.y);
+      }
+    });
+    
+    // Mouse down - start dragging or connection or panning or selection
     canvas.addEventListener("mousedown", (e) => {
-      // Check if starting a connection from output port
+      // Right button = pan camera
+      if (e.button === 2) {
+        state.ui.dragState = {
+          type: "pan",
+          startX: e.clientX,
+          startY: e.clientY,
+          startCamX: state.build.camera.x,
+          startCamY: state.build.camera.y,
+        };
+        canvas.style.cursor = "grabbing";
+        e.preventDefault();
+        return;
+      }
+      
+      // Left button - check if starting a connection from output port
       const outputPort = e.target.closest("[data-output-port]");
       if (outputPort) {
         const machineEl = outputPort.closest("[data-placed-machine]");
         const machineId = machineEl.dataset.placedMachine;
         const portIdx = outputPort.dataset.outputPort; // Keep as string to support topper ports
         
+        // Get world coordinates for the port
+        const machineData = state.build.placedMachines.find(pm => pm.id === machineId);
+        if (!machineData) return;
+        
         const portRect = outputPort.getBoundingClientRect();
-        const canvasRect = canvas.getBoundingClientRect();
+        const machineRect = machineEl.getBoundingClientRect();
+        const { zoom } = state.build.camera;
+        
+        // Calculate port offset within machine card
+        const portOffsetX = (portRect.left - machineRect.left + portRect.width) / zoom;
+        const portOffsetY = (portRect.top - machineRect.top + portRect.height / 2) / zoom;
+        
+        // World coordinates
+        const worldX = machineData.x + portOffsetX;
+        const worldY = machineData.y + portOffsetY;
         
         state.ui.dragState = {
           type: "connection",
           fromMachineId: machineId,
           fromPortIdx: portIdx,
-          startX: portRect.right - canvasRect.left + canvas.scrollLeft,
-          startY: portRect.top + portRect.height / 2 - canvasRect.top + canvas.scrollTop,
+          startX: worldX,
+          startY: worldY,
         };
         
         e.preventDefault();
@@ -2214,60 +2513,234 @@
       }
       
       const machineCard = e.target.closest("[data-placed-machine]");
-      if (!machineCard) return;
       
-      const machineId = machineCard.dataset.placedMachine;
-      const rect = machineCard.getBoundingClientRect();
-      const canvasRect = canvas.getBoundingClientRect();
-      
-      state.ui.dragState = {
-        type: "machine",
-        machineId,
-        startX: e.clientX,
-        startY: e.clientY,
-        initialLeft: rect.left - canvasRect.left + canvas.scrollLeft,
-        initialTop: rect.top - canvasRect.top + canvas.scrollTop,
-        hasMoved: false,
-      };
-      
-      e.preventDefault();
+      if (machineCard) {
+        // Clicked on a machine card
+        const machineId = machineCard.dataset.placedMachine;
+        const pm = state.build.placedMachines.find(m => m.id === machineId);
+        if (!pm) return;
+        
+        // Handle Ctrl+click for multi-selection
+        if (e.ctrlKey || e.metaKey) {
+          // Toggle selection
+          if (state.build.selectedMachines.includes(machineId)) {
+            state.build.selectedMachines = state.build.selectedMachines.filter(id => id !== machineId);
+          } else {
+            state.build.selectedMachines.push(machineId);
+          }
+          updateSelectionClasses();
+          e.preventDefault();
+          return;
+        }
+        
+        // If clicking on an already selected machine, prepare for group drag
+        const isAlreadySelected = state.build.selectedMachines.includes(machineId);
+        
+        // Store initial positions for all selected machines
+        const initialPositions = new Map();
+        if (isAlreadySelected && state.build.selectedMachines.length > 0) {
+          // Group drag - store all selected machine positions
+          state.build.selectedMachines.forEach(id => {
+            const machine = state.build.placedMachines.find(m => m.id === id);
+            if (machine) {
+              initialPositions.set(id, { x: machine.x, y: machine.y });
+            }
+          });
+        } else {
+          // Single machine drag - select only this one
+          state.build.selectedMachines = [machineId];
+          initialPositions.set(machineId, { x: pm.x, y: pm.y });
+          updateSelectionClasses();
+        }
+        
+        state.ui.dragState = {
+          type: "machine",
+          machineIds: Array.from(state.build.selectedMachines), // All machines being dragged
+          startX: e.clientX,
+          startY: e.clientY,
+          initialPositions: initialPositions,
+          hasMoved: false,
+        };
+        
+        e.preventDefault();
+      } else {
+        // Clicked on empty canvas - start drag-to-select
+        const canvasRect = canvas.getBoundingClientRect();
+        const screenX = e.clientX - canvasRect.left;
+        const screenY = e.clientY - canvasRect.top;
+        const worldPos = screenToWorld(screenX, screenY);
+        
+        state.ui.dragState = {
+          type: "select",
+          startX: e.clientX,
+          startY: e.clientY,
+          startWorldX: worldPos.x,
+          startWorldY: worldPos.y,
+          currentX: e.clientX,
+          currentY: e.clientY,
+        };
+        
+        e.preventDefault();
+      }
     });
     
-    // Mouse move - drag machine or connection preview
+    // Mouse move - drag machine, connection preview, selection box, or pan camera
     document.addEventListener("mousemove", (e) => {
       if (!state.ui.dragState) return;
       
-      if (state.ui.dragState.type === "connection") {
-        // Draw preview line for connection
-        const canvasRect = canvas.getBoundingClientRect();
-        state.ui.dragState.currentX = e.clientX - canvasRect.left + canvas.scrollLeft;
-        state.ui.dragState.currentY = e.clientY - canvasRect.top + canvas.scrollTop;
-        renderCanvas();
+      if (state.ui.dragState.type === "pan") {
+        // Pan the camera
+        const dx = e.clientX - state.ui.dragState.startX;
+        const dy = e.clientY - state.ui.dragState.startY;
+        
+        const { zoom } = state.build.camera;
+        
+        // Move camera in opposite direction of mouse movement (drag world, not viewport)
+        state.build.camera.x = state.ui.dragState.startCamX - (dx / zoom);
+        state.build.camera.y = state.ui.dragState.startCamY - (dy / zoom);
+        
+        // Just update the transform, don't re-render everything
+        updateCameraTransform();
         return;
       }
       
-      const dx = e.clientX - state.ui.dragState.startX;
-      const dy = e.clientY - state.ui.dragState.startY;
-      
-      // Consider it a drag if moved more than 3px
-      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-        state.ui.dragState.hasMoved = true;
+      if (state.ui.dragState.type === "connection") {
+        // Convert mouse position to world coordinates for preview line
+        const canvasRect = canvas.getBoundingClientRect();
+        const screenX = e.clientX - canvasRect.left;
+        const screenY = e.clientY - canvasRect.top;
+        const worldPos = screenToWorld(screenX, screenY);
+        
+        state.ui.dragState.currentX = worldPos.x;
+        state.ui.dragState.currentY = worldPos.y;
+        
+        // Re-render connections only (for preview line)
+        const svgEl = canvas.querySelector("#connectionsSvg");
+        if (svgEl) {
+          renderConnections(svgEl);
+        }
+        return;
       }
       
-      if (state.ui.dragState.hasMoved) {
-        const pm = state.build.placedMachines.find(m => m.id === state.ui.dragState.machineId);
-        if (pm) {
-          // Apply bounds checking - prevent dragging off top or left
-          pm.x = Math.max(0, state.ui.dragState.initialLeft + dx);
-          pm.y = Math.max(0, state.ui.dragState.initialTop + dy);
-          renderCanvas();
+      if (state.ui.dragState.type === "select") {
+        // Update selection box
+        state.ui.dragState.currentX = e.clientX;
+        state.ui.dragState.currentY = e.clientY;
+        
+        // Draw selection box
+        drawSelectionBox();
+        return;
+      }
+      
+      if (state.ui.dragState.type === "machine") {
+        const dx = e.clientX - state.ui.dragState.startX;
+        const dy = e.clientY - state.ui.dragState.startY;
+        
+        // Consider it a drag if moved more than 3px
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+          state.ui.dragState.hasMoved = true;
+        }
+        
+        if (state.ui.dragState.hasMoved) {
+          // Convert screen delta to world delta
+          const { zoom } = state.build.camera;
+          const worldDx = dx / zoom;
+          const worldDy = dy / zoom;
+          
+          // Update all selected machines
+          state.ui.dragState.machineIds.forEach(machineId => {
+            const pm = state.build.placedMachines.find(m => m.id === machineId);
+            const initialPos = state.ui.dragState.initialPositions.get(machineId);
+            
+            if (pm && initialPos) {
+              // Update world position
+              pm.x = initialPos.x + worldDx;
+              pm.y = initialPos.y + worldDy;
+              
+              // Update machine element position directly (faster than full re-render)
+              const machineEl = canvas.querySelector(`[data-placed-machine="${machineId}"]`);
+              if (machineEl) {
+                machineEl.style.left = `${pm.x}px`;
+                machineEl.style.top = `${pm.y}px`;
+              }
+            }
+          });
+          
+          // Re-render connections only (still need this for connection lines to follow)
+          const svgEl = canvas.querySelector("#connectionsSvg");
+          if (svgEl) {
+            renderConnections(svgEl);
+          }
         }
       }
     });
     
-    // Mouse up - end dragging or complete connection
+    // Mouse up - end dragging or complete connection or pan or selection
     document.addEventListener("mouseup", (e) => {
       if (!state.ui.dragState) return;
+      
+      if (state.ui.dragState.type === "pan") {
+        // Sync render and save camera position after panning
+        canvas.style.cursor = "";
+        syncRenderAfterCameraMove();
+        saveBuild();
+        state.ui.dragState = null;
+        return;
+      }
+      
+      if (state.ui.dragState.type === "select") {
+        // Complete selection box
+        removeSelectionBox();
+        
+        // Calculate selection box in world coordinates
+        const canvasRect = canvas.getBoundingClientRect();
+        const startScreenX = state.ui.dragState.startX - canvasRect.left;
+        const startScreenY = state.ui.dragState.startY - canvasRect.top;
+        const endScreenX = e.clientX - canvasRect.left;
+        const endScreenY = e.clientY - canvasRect.top;
+        
+        const startWorld = screenToWorld(startScreenX, startScreenY);
+        const endWorld = screenToWorld(endScreenX, endScreenY);
+        
+        const minX = Math.min(startWorld.x, endWorld.x);
+        const maxX = Math.max(startWorld.x, endWorld.x);
+        const minY = Math.min(startWorld.y, endWorld.y);
+        const maxY = Math.max(startWorld.y, endWorld.y);
+        
+        // Find all machines within selection box
+        const selectedIds = [];
+        state.build.placedMachines.forEach(pm => {
+          const machineEl = document.querySelector(`[data-placed-machine="${pm.id}"]`);
+          if (!machineEl) return;
+          
+          const width = machineEl.offsetWidth;
+          const height = machineEl.offsetHeight;
+          
+          // Check if machine intersects with selection box
+          const machineRight = pm.x + width;
+          const machineBottom = pm.y + height;
+          
+          if (pm.x < maxX && machineRight > minX && pm.y < maxY && machineBottom > minY) {
+            selectedIds.push(pm.id);
+          }
+        });
+        
+        state.build.selectedMachines = selectedIds;
+        state.ui.dragState = null;
+        updateSelectionClasses();
+        
+        if (selectedIds.length > 0) {
+          setStatus(`Selected ${selectedIds.length} machine${selectedIds.length > 1 ? 's' : ''}.`);
+        }
+        
+        // Set flag to prevent the subsequent click event from clearing selection
+        state.ui.justCompletedSelection = true;
+        setTimeout(() => {
+          state.ui.justCompletedSelection = false;
+        }, 0);
+        
+        return;
+      }
       
       if (state.ui.dragState.type === "connection") {
         // Check if dropped on an input port
@@ -2305,8 +2778,21 @@
               }
             }
             
+            // Check if connecting to a heating device's fuel port - need full re-render
+            let needsFullRender = false;
+            if (toPortIdx === "fuel") {
+              const toMachineDef = toMachine ? getMachineById(toMachine.machineId) : null;
+              if (toMachineDef && toMachineDef.kind === "heating_device") {
+                needsFullRender = true;
+              }
+            }
+            
             saveBuild();
             setStatus("Connection created.");
+            
+            state.ui.dragState = null;
+            renderCanvas(needsFullRender); // Force full re-render if connecting fuel
+            return;
           }
         }
         
@@ -2315,30 +2801,40 @@
         return;
       }
       
-      // If it was just a click (not a drag), select the machine
-      if (!state.ui.dragState.hasMoved) {
-        const machineCard = e.target.closest("[data-placed-machine]");
-        if (machineCard && !e.target.closest("select, button, input")) {
-          selectPlacedMachine(state.ui.dragState.machineId);
+      if (state.ui.dragState.type === "machine") {
+        // If it was just a click (not a drag), selection already handled in mousedown
+        if (state.ui.dragState.hasMoved) {
+          // Save build after dragging
+          saveBuild();
         }
-      } else {
-        // Save build after dragging
-        saveBuild();
+        
+        state.ui.dragState = null;
       }
-      
-      state.ui.dragState = null;
     });
     
-    // ESC key to cancel connection dragging, Delete key to remove selected items
+    // ESC key to cancel connection dragging or selection, Delete key to remove selected items
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && state.ui.dragState && state.ui.dragState.type === "connection") {
-        state.ui.dragState = null;
-        renderCanvas();
-        setStatus("Connection cancelled.");
-        return;
+      if (e.key === "Escape") {
+        if (state.ui.dragState && state.ui.dragState.type === "connection") {
+          state.ui.dragState = null;
+          renderCanvas();
+          setStatus("Connection cancelled.");
+          return;
+        }
+        if (state.ui.dragState && state.ui.dragState.type === "select") {
+          removeSelectionBox();
+          state.ui.dragState = null;
+          return;
+        }
+        // Escape also clears selection if nothing is being dragged
+        if (state.build.selectedMachines.length > 0) {
+          state.build.selectedMachines = [];
+          updateSelectionClasses();
+          return;
+        }
       }
       
-      // Delete key to remove selected machine or connection
+      // Delete key to remove selected machines or connection
       if (e.key === "Delete") {
         // Ignore if user is typing in an input field
         if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") {
@@ -2347,8 +2843,8 @@
         
         if (state.build.selectedConnection) {
           deleteConnection(state.build.selectedConnection);
-        } else if (state.build.selectedMachine) {
-          deletePlacedMachine(state.build.selectedMachine);
+        } else if (state.build.selectedMachines.length > 0) {
+          deleteSelectedMachines();
         }
       }
     });
@@ -2413,6 +2909,14 @@
         return;
       }
       
+      const editBlueprintBtn = e.target.closest("[data-action='blueprint:edit']");
+      if (editBlueprintBtn) {
+        const machineId = editBlueprintBtn.closest("[data-placed-machine]").dataset.placedMachine;
+        enterBlueprintEditMode(machineId);
+        e.stopPropagation();
+        return;
+      }
+      
       // Check if clicked on a connection (polyline)
       if (e.target.tagName === "polyline" && e.target.dataset.connectionId) {
         selectConnection(e.target.dataset.connectionId);
@@ -2421,10 +2925,11 @@
       }
       
       // If clicked on canvas background (not on a machine or connection), deselect
-      if (e.target === canvas || e.target.closest("#connectionsSvg")) {
-        state.build.selectedMachine = null;
+      // Skip if we just completed a drag-to-select operation
+      if ((e.target === canvas || e.target.closest("#connectionsSvg")) && !state.ui.justCompletedSelection) {
+        state.build.selectedMachines = [];
         state.build.selectedConnection = null;
-        renderCanvas();
+        updateSelectionClasses();
       }
     });
     
@@ -2521,7 +3026,7 @@
     
     pm.count = count;
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreate - count display changed
   }
   
   function updatePurchasingPortalMaterial(machineId, materialId) {
@@ -2530,7 +3035,7 @@
     
     pm.materialId = materialId || null;
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreate - material selection changed
   }
   
   function updateFuelSourceMaterial(machineId, fuelId) {
@@ -2539,7 +3044,7 @@
     
     pm.fuelId = fuelId || null;
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreate - fuel selection changed
   }
   
   function updateNurseryPlant(machineId, plantId) {
@@ -2548,7 +3053,7 @@
     
     pm.plantId = plantId || null;
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreate - plant selection changed
   }
   
   function updateNurseryFertilizer(machineId, fertilizerId) {
@@ -2557,7 +3062,7 @@
     
     pm.fertilizerId = fertilizerId || null;
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreate - fertilizer selection changed
   }
   
   function updateHeatingDevicePreviewFuel(machineId, fuelId) {
@@ -2569,7 +3074,7 @@
     
     pm.previewFuelId = fuelId || null;
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreate - fuel selection changed
   }
   
   function updateStorageSlots(machineId, slots) {
@@ -2582,7 +3087,7 @@
     // Enforce max from definition
     pm.storageSlots = Math.min(slots, machine.storageSlots);
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreate - storage slots changed
   }
   
   // ---------- Production Calculation ----------
@@ -2595,6 +3100,20 @@
    * @returns {string|null} Material ID or null
    */
   function getMaterialIdFromPort(placedMachine, portIdx, type) {
+    // Blueprint type
+    if (placedMachine.type === "blueprint") {
+      const bpData = placedMachine.blueprintData || {};
+      const portIdxNum = parseInt(portIdx);
+      
+      if (type === "input") {
+        const input = bpData.inputs?.[portIdxNum];
+        return input?.materialId || null;
+      } else {
+        const output = bpData.outputs?.[portIdxNum];
+        return output?.materialId || null;
+      }
+    }
+    
     // Purchasing portal
     if (placedMachine.type === "purchasing_portal") {
       return placedMachine.materialId;
@@ -2699,6 +3218,15 @@
    * @returns {number} Rate (items/min)
    */
   function getPortOutputRate(placedMachine, portIdx) {
+    // Blueprint type
+    if (placedMachine.type === "blueprint") {
+      const bpData = placedMachine.blueprintData || {};
+      const portIdxNum = parseInt(portIdx);
+      const output = bpData.outputs?.[portIdxNum];
+      const count = placedMachine.count || 1;
+      return (output?.rate || 0) * count;
+    }
+    
     const machine = getMachineById(placedMachine.machineId);
     if (!machine) {
       // Special types without machineId
@@ -2737,6 +3265,8 @@
         return (60 * totalConsumptionP) / adjustedFuelValue;
       }
       if (placedMachine.type === "storage") {
+        // Storage: Each output port is independently capped at conveyor speed
+        // This represents a single belt/port, not multiple belts
         return getConveyorSpeed();
       }
       if (placedMachine.type === "nursery") {
@@ -2854,6 +3384,15 @@
    * @returns {number} Demand rate (items/min)
    */
   function getPortInputDemand(placedMachine, portIdx) {
+    // Blueprint type
+    if (placedMachine.type === "blueprint") {
+      const bpData = placedMachine.blueprintData || {};
+      const portIdxNum = parseInt(portIdx);
+      const input = bpData.inputs?.[portIdxNum];
+      const count = placedMachine.count || 1;
+      return (input?.rate || 0) * count;
+    }
+    
     const machine = getMachineById(placedMachine.machineId);
     if (!machine) {
       // Handle special types without machineId
@@ -2901,8 +3440,11 @@
       return 0;
     }
     
-    // Storage machines don't have fixed input demand
-    if (machine.kind === "storage") return 0;
+    // Storage machines: Each input port can accept up to conveyor speed
+    // This represents the belt capacity for this specific port
+    if (machine.kind === "storage") {
+      return getConveyorSpeed();
+    }
     
     // Heating device fuel input
     if (machine.kind === "heating_device" && portIdx === "fuel") {
@@ -3268,13 +3810,14 @@
       const materialId = getMaterialIdFromPort(destMachine, conn.toPortIdx, "input");
       if (!materialId) return;
       
-      // Use actual demand from downstream machine
-      const demand = getPortInputDemand(destMachine, conn.toPortIdx);
+      // Use actual connection rate (accounts for storage port conveyor speed cap per port)
+      // Each storage output port is independently capped at conveyor speed
+      const rate = getConnectionRate(conn);
       
       if (!materialFlows.has(materialId)) {
         materialFlows.set(materialId, { inputRate: 0, outputRate: 0 });
       }
-      materialFlows.get(materialId).outputRate += demand;
+      materialFlows.get(materialId).outputRate += rate;
     });
     
     // Calculate inventory status for each material using time-based simulation
@@ -3436,11 +3979,16 @@
     return inventories;
   }
   
-  function calculateProductionFlow() {
+  function calculateProductionFlow(selectedMachineIds = null) {
     // Build a map of production rates for each placed machine
+    // If selectedMachineIds is provided, only calculate for those machines (for blueprint analysis)
     const productionRates = new Map(); // machineId -> { inputs: [{materialId, rate}], outputs: [{materialId, rate}] }
     
-    state.build.placedMachines.forEach(pm => {
+    const machinesToAnalyze = selectedMachineIds 
+      ? state.build.placedMachines.filter(pm => selectedMachineIds.includes(pm.id))
+      : state.build.placedMachines;
+    
+    machinesToAnalyze.forEach(pm => {
       if (pm.type === "purchasing_portal") {
         // Purchasing Portal outputs at max belt speed, assumes infinite coins
         const conveyorSpeed = getConveyorSpeed();
@@ -3488,6 +4036,25 @@
           outputs: [
             { portIdx: 0, materialId: pm.plantId, rate: plantRate },
           ],
+        });
+      } else if (pm.type === "blueprint") {
+        // Blueprint is a black box with defined inputs and outputs
+        const bpData = pm.blueprintData || {};
+        const count = pm.count || 1;
+        const inputs = (bpData.inputs || []).map((inp, idx) => ({
+          portIdx: idx,
+          materialId: inp.materialId,
+          rate: inp.rate * count
+        }));
+        const outputs = (bpData.outputs || []).map((out, idx) => ({
+          portIdx: idx,
+          materialId: out.materialId,
+          rate: out.rate * count
+        }));
+        
+        productionRates.set(pm.id, {
+          inputs,
+          outputs
         });
       } else if (pm.type === "machine" && pm.machineId) {
         const machine = getMachineById(pm.machineId);
@@ -3603,12 +4170,243 @@
     return state.build.placedMachines.filter(pm => !machinesWithOutputs.has(pm.id));
   }
   
-  function getNetProduction() {
+  /**
+   * Calculate machine efficiencies with backpressure system
+   * Machines underclock based on actual downstream demand vs theoretical max output
+   * This cascades upstream, reducing input requirements proportionally
+   * Results are cached on connections and machine efficiency stored on placedMachine objects
+   */
+  function calculateMachineEfficiencies() {
+    // Reset all machine efficiencies to 100% initially
+    state.build.placedMachines.forEach(pm => {
+      pm.efficiency = 1.0; // 100%
+      pm.actualInputRates = {}; // materialId -> actual rate needed
+      pm.actualOutputRates = {}; // materialId -> actual rate produced
+    });
+    
+    // Build adjacency maps for traversal
+    const outputConnections = new Map(); // fromMachineId -> [connections]
+    const inputConnections = new Map(); // toMachineId -> [connections]
+    
+    state.build.connections.forEach(conn => {
+      if (!outputConnections.has(conn.fromMachineId)) {
+        outputConnections.set(conn.fromMachineId, []);
+      }
+      outputConnections.get(conn.fromMachineId).push(conn);
+      
+      if (!inputConnections.has(conn.toMachineId)) {
+        inputConnections.set(conn.toMachineId, []);
+      }
+      inputConnections.get(conn.toMachineId).push(conn);
+    });
+    
+    // Track which machines have been processed
+    const processed = new Set();
+    const processing = new Set(); // For cycle detection
+    
+    /**
+     * Calculate efficiency for a machine recursively
+     * @param {string} machineId - Machine to calculate efficiency for
+     * @returns {number} Efficiency (0-1)
+     */
+    function calculateMachineEfficiency(machineId) {
+      if (processed.has(machineId)) {
+        const pm = state.build.placedMachines.find(m => m.id === machineId);
+        return pm ? pm.efficiency : 1.0;
+      }
+      
+      // Detect cycles
+      if (processing.has(machineId)) {
+        return 1.0; // Assume full efficiency for cycles
+      }
+      
+      processing.add(machineId);
+      
+      const pm = state.build.placedMachines.find(m => m.id === machineId);
+      if (!pm) {
+        processed.add(machineId);
+        processing.delete(machineId);
+        return 1.0;
+      }
+      
+      // Special cases that always run at 100%
+      if (pm.type === "purchasing_portal" || pm.type === "fuel_source") {
+        pm.efficiency = 1.0;
+        processed.add(machineId);
+        processing.delete(machineId);
+        return 1.0;
+      }
+      
+      // Storage machines are pass-through, always 100%
+      const machine = pm.machineId ? getMachineById(pm.machineId) : null;
+      if (machine && machine.kind === "storage") {
+        pm.efficiency = 1.0;
+        processed.add(machineId);
+        processing.delete(machineId);
+        return 1.0;
+      }
+      
+      // Calculate max theoretical output for each material
+      const maxOutputRates = new Map(); // materialId -> max rate
+      
+      // Get max output rates based on machine type
+      if (pm.type === "machine" && pm.recipeId) {
+        const recipe = getRecipeById(pm.recipeId);
+        if (recipe) {
+          const effectiveTime = getEffectiveProcessingTime(recipe.processingTimeSec);
+          const count = pm.count || 1;
+          recipe.outputs.forEach(out => {
+            if (out.materialId) {
+              const rate = (out.items / effectiveTime) * 60 * count;
+              maxOutputRates.set(out.materialId, (maxOutputRates.get(out.materialId) || 0) + rate);
+            }
+          });
+        }
+      } else if (pm.type === "nursery") {
+        const rate = getPortOutputRate(pm, 0);
+        if (pm.plantId) {
+          maxOutputRates.set(pm.plantId, rate);
+        }
+      } else if (pm.type === "blueprint") {
+        const bpData = pm.blueprintData || {};
+        const count = pm.count || 1;
+        (bpData.outputs || []).forEach(out => {
+          if (out.materialId) {
+            maxOutputRates.set(out.materialId, out.rate * count);
+          }
+        });
+      } else if (machine && machine.kind === "heating_device") {
+        const count = pm.count || 1;
+        (pm.toppers || []).forEach(topper => {
+          const topperRecipe = topper.recipeId ? getRecipeById(topper.recipeId) : null;
+          if (topperRecipe) {
+            const effectiveTime = getEffectiveProcessingTime(topperRecipe.processingTimeSec);
+            topperRecipe.outputs.forEach(out => {
+              if (out.materialId) {
+                const rate = (out.items / effectiveTime) * 60 * count;
+                maxOutputRates.set(out.materialId, (maxOutputRates.get(out.materialId) || 0) + rate);
+              }
+            });
+          }
+        });
+      }
+      
+      // Calculate actual demand from downstream machines using distribution algorithm
+      const actualDemand = new Map(); // materialId -> total actual demand
+      const outgoingConns = outputConnections.get(machineId) || [];
+      
+      // Group connections by output port
+      const portGroups = new Map(); // portIdx -> [connections]
+      outgoingConns.forEach(conn => {
+        const portKey = String(conn.fromPortIdx);
+        if (!portGroups.has(portKey)) {
+          portGroups.set(portKey, []);
+        }
+        portGroups.get(portKey).push(conn);
+      });
+      
+      // For each output port, calculate distributed rates
+      portGroups.forEach((connections, portIdx) => {
+        // First calculate downstream efficiencies for all targets
+        connections.forEach(conn => {
+          calculateMachineEfficiency(conn.toMachineId);
+        });
+        
+        // Get max output for this port
+        const maxOutput = getPortOutputRate(pm, portIdx);
+        
+        // Get material for this port
+        const materialId = getMaterialIdFromPort(pm, portIdx, "output");
+        if (!materialId) return;
+        
+        // Distribute the output among all connections from this port
+        const distribution = distributeOutputRate(pm, portIdx, maxOutput);
+        
+        // Sum up actual distributed rates for this material
+        let totalDistributed = 0;
+        distribution.forEach(rate => {
+          totalDistributed += rate;
+        });
+        
+        actualDemand.set(materialId, (actualDemand.get(materialId) || 0) + totalDistributed);
+      });
+      
+      // Calculate efficiency based on bottleneck (most constrained output)
+      let efficiency = 1.0;
+      
+      if (maxOutputRates.size > 0) {
+        // For each output material, check if demand is less than max output
+        maxOutputRates.forEach((maxRate, materialId) => {
+          const demand = actualDemand.get(materialId) || 0;
+          
+          if (maxRate > 0) {
+            const materialEfficiency = demand / maxRate;
+            // Use the minimum efficiency across all outputs (bottleneck)
+            efficiency = Math.min(efficiency, materialEfficiency);
+          }
+        });
+        
+        // Clamp efficiency to [0, 1]
+        efficiency = Math.max(0, Math.min(1, efficiency));
+      }
+      
+      pm.efficiency = efficiency;
+      processed.add(machineId);
+      processing.delete(machineId);
+      
+      return efficiency;
+    }
+    
+    // Start from all machines and calculate efficiencies
+    state.build.placedMachines.forEach(pm => {
+      calculateMachineEfficiency(pm.id);
+    });
+    
+    // Update connection actual rates based on calculated efficiencies
+    // Group connections by source machine and port
+    const sourcePortMap = new Map(); // `${machineId}-${portIdx}` -> [connections]
+    
+    state.build.connections.forEach(conn => {
+      const key = `${conn.fromMachineId}-${conn.fromPortIdx}`;
+      if (!sourcePortMap.has(key)) {
+        sourcePortMap.set(key, []);
+      }
+      sourcePortMap.get(key).push(conn);
+    });
+    
+    // Calculate distribution for each source port
+    sourcePortMap.forEach((connections, key) => {
+      const firstConn = connections[0];
+      const sourceMachine = state.build.placedMachines.find(pm => pm.id === firstConn.fromMachineId);
+      
+      if (!sourceMachine) return;
+      
+      const sourceEfficiency = sourceMachine.efficiency || 1.0;
+      const maxRate = getPortOutputRate(sourceMachine, firstConn.fromPortIdx);
+      const totalAvailable = maxRate * sourceEfficiency;
+      
+      // Use distribution algorithm
+      const distribution = distributeOutputRate(sourceMachine, firstConn.fromPortIdx, totalAvailable);
+      
+      // Apply distributed rates to connections
+      connections.forEach(conn => {
+        conn.actualRate = distribution.get(conn.id) || 0;
+        conn.lastCalculated = Date.now();
+      });
+    });
+  }
+  
+  function getNetProduction(selectedMachineIds = null) {
     // Calculate the net production/consumption across the entire factory
-    const productionRates = calculateProductionFlow();
+    // If selectedMachineIds provided, it's only used to filter machines in calculateProductionFlow
+    const productionRates = calculateProductionFlow(selectedMachineIds);
     const netMaterials = new Map(); // materialId -> net rate (positive = surplus, negative = deficit)
     
-    state.build.placedMachines.forEach(pm => {
+    const machinesToCalculate = selectedMachineIds 
+      ? state.build.placedMachines.filter(pm => selectedMachineIds.includes(pm.id))
+      : state.build.placedMachines;
+    
+    machinesToCalculate.forEach(pm => {
       const rates = productionRates.get(pm.id);
       if (!rates) return;
       
@@ -3621,10 +4419,32 @@
       });
       
       // Count outputs as production
+      // For infinite source machines (purchasing_portal, fuel_source), only count what's actually consumed
+      const isInfiniteSource = pm.type === "purchasing_portal" || pm.type === "fuel_source";
+      
       rates.outputs.forEach(out => {
-        if (out.materialId) {
+        if (!out.materialId) return;
+        
+        let outputRate = out.rate;
+        
+        if (isInfiniteSource) {
+          // For infinite sources, only count what's actually flowing through connections
+          const outgoingConnections = state.build.connections.filter(conn => 
+            conn.fromMachineId === pm.id
+          );
+          
+          let actualFlow = 0;
+          outgoingConnections.forEach(conn => {
+            actualFlow += getConnectionRate(conn);
+          });
+          
+          // Use the actual flow instead of theoretical capacity
+          outputRate = actualFlow;
+        }
+        
+        if (outputRate > 0) {
           const current = netMaterials.get(out.materialId) || 0;
-          netMaterials.set(out.materialId, current + out.rate);
+          netMaterials.set(out.materialId, current + outputRate);
         }
       });
     });
@@ -3693,6 +4513,13 @@
    * @returns {boolean} True if inputs are insufficient
    */
   function checkInsufficientInputs(placedMachine) {
+    // Special types that don't have required inputs (only capacity/buffer limits)
+    if (placedMachine.type === "storage") return false;
+    if (placedMachine.type === "purchasing_portal") return false;
+    if (placedMachine.type === "fuel_source") return false;
+    if (placedMachine.type === "nursery") return false;
+    if (placedMachine.type === "blueprint") return false;
+    
     // Only check machines with recipes
     if (placedMachine.type !== "machine" || !placedMachine.recipeId) {
       return false;
@@ -3702,8 +4529,12 @@
     const recipe = getRecipeById(placedMachine.recipeId);
     if (!machine || !recipe) return false;
     
-    // Storage machines don't have fixed input demands
+    // Storage machines don't have required inputs (just capacity limits)
     if (machine.kind === "storage") return false;
+    
+    // Heating devices have special handling - they don't require inputs for toppers
+    // (toppers are optional additions), only check if they have recipes selected
+    if (machine.kind === "heating_device") return false;
     
     // Get all incoming connections
     const incomingConnections = state.build.connections.filter(
@@ -3734,26 +4565,224 @@
     return false;
   }
 
-  function renderCanvas() {
+  /**
+   * Convert world coordinates to screen coordinates
+   * @param {number} worldX - X coordinate in world space
+   * @param {number} worldY - Y coordinate in world space
+   * @returns {{ x: number, y: number }} Screen coordinates
+   */
+  function worldToScreen(worldX, worldY) {
+    const canvas = $("#designCanvas");
+    if (!canvas) return { x: 0, y: 0 };
+    
+    const rect = canvas.getBoundingClientRect();
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+    
+    const { x: camX, y: camY, zoom } = state.build.camera;
+    
+    // Calculate offset from camera position
+    const offsetX = worldX - camX;
+    const offsetY = worldY - camY;
+    
+    // Apply zoom and center on viewport
+    const screenX = centerX + (offsetX * zoom);
+    const screenY = centerY + (offsetY * zoom);
+    
+    return { x: screenX, y: screenY };
+  }
+  
+  /**
+   * Convert screen coordinates to world coordinates
+   * @param {number} screenX - X coordinate in screen space (relative to canvas)
+   * @param {number} screenY - Y coordinate in screen space (relative to canvas)
+   * @returns {{ x: number, y: number }} World coordinates
+   */
+  function screenToWorld(screenX, screenY) {
+    const canvas = $("#designCanvas");
+    if (!canvas) return { x: 0, y: 0 };
+    
+    const rect = canvas.getBoundingClientRect();
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+    
+    const { x: camX, y: camY, zoom } = state.build.camera;
+    
+    // Calculate offset from viewport center
+    const offsetX = screenX - centerX;
+    const offsetY = screenY - centerY;
+    
+    // Remove zoom and add camera position
+    const worldX = camX + (offsetX / zoom);
+    const worldY = camY + (offsetY / zoom);
+    
+    return { x: worldX, y: worldY };
+  }
+
+  /**
+   * Update selection classes on machine elements without re-rendering
+   */
+  function updateSelectionClasses() {
     const canvas = $("#designCanvas");
     if (!canvas) return;
     
-    // Update canvas subtitle with conveyor speed
-    const subtitle = $("#canvasSubtitle");
-    if (subtitle) {
-      const speed = getEffectiveConveyorSpeed();
-      subtitle.textContent = `Conveyor Speed: ${speed}/min`;
+    const container = canvas.querySelector("#canvasTransformContainer");
+    if (!container) return;
+    
+    const selectedSet = new Set(state.build.selectedMachines);
+    const selectionCount = state.build.selectedMachines.length;
+    const isMultiSelect = selectionCount > 1;
+    
+    // Update all machine elements
+    state.build.placedMachines.forEach(pm => {
+      const el = container.querySelector(`[data-placed-machine="${pm.id}"]`);
+      if (!el) return;
+      
+      const isSelected = selectedSet.has(pm.id);
+      
+      // Update selection class
+      if (isSelected) {
+        el.classList.add("is-selected");
+      } else {
+        el.classList.remove("is-selected");
+      }
+      
+      // Update multi-selection badge
+      if (isSelected && isMultiSelect) {
+        el.classList.add("is-multi-selected");
+        el.style.setProperty('--selection-count', `"${selectionCount}"`);
+      } else {
+        el.classList.remove("is-multi-selected");
+        el.style.removeProperty('--selection-count');
+      }
+    });
+    
+    // Update create blueprint button state
+    updateCreateBlueprintButton();
+  }
+  
+  /**
+   * Draw selection box during drag-to-select
+   */
+  function drawSelectionBox() {
+    const canvas = $("#designCanvas");
+    if (!canvas || !state.ui.dragState || state.ui.dragState.type !== "select") return;
+    
+    // Remove existing selection box
+    removeSelectionBox();
+    
+    const { startX, startY, currentX, currentY } = state.ui.dragState;
+    const canvasRect = canvas.getBoundingClientRect();
+    
+    const minX = Math.min(startX, currentX) - canvasRect.left;
+    const maxX = Math.max(startX, currentX) - canvasRect.left;
+    const minY = Math.min(startY, currentY) - canvasRect.top;
+    const maxY = Math.max(startY, currentY) - canvasRect.top;
+    
+    const box = document.createElement("div");
+    box.id = "selectionBox";
+    box.style.position = "absolute";
+    box.style.left = `${minX}px`;
+    box.style.top = `${minY}px`;
+    box.style.width = `${maxX - minX}px`;
+    box.style.height = `${maxY - minY}px`;
+    box.style.border = "2px dashed var(--primary)";
+    box.style.background = "rgba(69, 212, 131, 0.1)";
+    box.style.pointerEvents = "none";
+    box.style.zIndex = "1000";
+    
+    canvas.appendChild(box);
+  }
+  
+  /**
+   * Remove selection box
+   */
+  function removeSelectionBox() {
+    const box = $("#selectionBox");
+    if (box) box.remove();
+  }
+  
+  /**
+   * Update camera transform without re-rendering (fast)
+   */
+  function updateCameraTransform() {
+    const canvas = $("#designCanvas");
+    if (!canvas) return;
+    
+    const { x: camX, y: camY, zoom } = state.build.camera;
+    
+    // Update subtitle (only if not in blueprint edit mode)
+    if (!state.currentBlueprintEdit) {
+      const subtitle = $("#canvasSubtitle");
+      if (subtitle) {
+        const speed = getEffectiveConveyorSpeed();
+        const zoomPercent = Math.round(zoom * 100);
+        subtitle.innerHTML = `Conveyor: ${speed}/min | <span class="canvas__coords" title="Click to jump to coordinates">Position: (${Math.round(camX)}, ${Math.round(camY)})</span> | Zoom: ${zoomPercent}%`;
+      }
     }
     
-    // Clear existing content except placeholder
-    const existingMachines = canvas.querySelectorAll("[data-placed-machine]");
-    existingMachines.forEach(m => m.remove());
+    // Get or create transform container
+    let container = canvas.querySelector("#canvasTransformContainer");
+    if (!container) {
+      // Container doesn't exist yet, renderCanvas will create it
+      return;
+    }
     
-    const svg = canvas.querySelector("svg");
-    if (svg) svg.remove();
+    // Apply transform to container
+    const rect = canvas.getBoundingClientRect();
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+    
+    // Transform: translate to viewport center, scale by zoom, then translate by camera offset
+    container.style.transform = `translate(${centerX}px, ${centerY}px) scale(${zoom}) translate(${-camX}px, ${-camY}px)`;
+  }
+  
+  /**
+   * Sync render after camera movement ends - updates existing elements instead of recreating
+   */
+  function syncRenderAfterCameraMove() {
+    const canvas = $("#designCanvas");
+    if (!canvas) return;
+    
+    const container = canvas.querySelector("#canvasTransformContainer");
+    if (!container) return;
+    
+    // Re-render connections (these need to be redrawn as paths may have changed)
+    const svgEl = container.querySelector("#connectionsSvg");
+    if (svgEl) {
+      renderConnections(svgEl);
+    }
+    
+    // Update machine elements that might need state refresh
+    state.build.placedMachines.forEach(pm => {
+      const existingEl = container.querySelector(`[data-placed-machine="${pm.id}"]`);
+      if (!existingEl) {
+        // Machine doesn't exist yet, shouldn't happen but create it
+        const el = createPlacedMachineElement(pm);
+        container.appendChild(el);
+      }
+      // Note: We don't update existing elements here as their positions are handled by CSS transform
+      // and their content shouldn't change during camera movement
+    });
+  }
+
+  /**
+   * Render canvas
+   * @param {boolean} forceRecreate - If true, recreate all machine elements instead of reusing
+   */
+  function renderCanvas(forceRecreate = false) {
+    const canvas = $("#designCanvas");
+    if (!canvas) return;
+    
+    // Update canvas subtitle
+    updateBlueprintEditUI();
     
     // If no machines, show placeholder
     if (state.build.placedMachines.length === 0) {
+      // Remove transform container if it exists
+      const existingContainer = canvas.querySelector("#canvasTransformContainer");
+      if (existingContainer) existingContainer.remove();
+      
       let placeholder = canvas.querySelector(".canvas__placeholder");
       if (!placeholder) {
         placeholder = document.createElement("div");
@@ -3772,27 +4801,123 @@
     const placeholder = canvas.querySelector(".canvas__placeholder");
     if (placeholder) placeholder.remove();
     
-    // Create SVG for connections
-    const svgNS = "http://www.w3.org/2000/svg";
-    const svgEl = document.createElementNS(svgNS, "svg");
-    svgEl.id = "connectionsSvg";
-    svgEl.style.position = "absolute";
-    svgEl.style.top = "0";
-    svgEl.style.left = "0";
-    svgEl.style.width = "100%";
-    svgEl.style.height = "100%";
-    svgEl.style.pointerEvents = "none";
-    svgEl.style.zIndex = "100"; // Above machine cards (z-index: 10)
-    canvas.appendChild(svgEl);
+    // Calculate machine efficiencies with backpressure system
+    // This must be done before rendering machines to have efficiency data available
+    calculateMachineEfficiencies();
     
-    // Render placed machines
-    state.build.placedMachines.forEach(pm => {
-      const el = createPlacedMachineElement(pm);
-      canvas.appendChild(el);
+    // Get or create transform container
+    let container = canvas.querySelector("#canvasTransformContainer");
+    const isNewContainer = !container;
+    
+    if (!container) {
+      container = document.createElement("div");
+      container.id = "canvasTransformContainer";
+      container.style.position = "absolute";
+      container.style.top = "0";
+      container.style.left = "0";
+      container.style.width = "0"; // Don't affect canvas size
+      container.style.height = "0";
+      container.style.transformOrigin = "0 0";
+      canvas.appendChild(container);
+    }
+    
+    // Get or create SVG for connections
+    const svgNS = "http://www.w3.org/2000/svg";
+    let svgEl = container.querySelector("#connectionsSvg");
+    
+    if (!svgEl) {
+      svgEl = document.createElementNS(svgNS, "svg");
+      svgEl.id = "connectionsSvg";
+      svgEl.style.position = "absolute";
+      svgEl.style.top = "0";
+      svgEl.style.left = "0";
+      svgEl.style.width = "10000px"; // Large enough for any layout
+      svgEl.style.height = "10000px";
+      svgEl.style.pointerEvents = "none";
+      svgEl.style.zIndex = "100"; // Above machine cards (z-index: 10)
+      svgEl.style.overflow = "visible";
+      container.appendChild(svgEl);
+    }
+    
+    // Reconcile machine elements (reuse existing elements where possible)
+    const currentMachineIds = new Set(state.build.placedMachines.map(pm => pm.id));
+    const existingElements = Array.from(container.querySelectorAll("[data-placed-machine]"));
+    
+    // Remove elements for machines that no longer exist
+    existingElements.forEach(el => {
+      const id = el.getAttribute("data-placed-machine");
+      if (!currentMachineIds.has(id)) {
+        el.remove();
+      }
     });
+    
+    if (forceRecreate) {
+      // Force recreate: remove all existing elements and create fresh
+      existingElements.forEach(el => {
+        if (currentMachineIds.has(el.getAttribute("data-placed-machine"))) {
+          el.remove();
+        }
+      });
+      
+      state.build.placedMachines.forEach(pm => {
+        const el = createPlacedMachineElement(pm);
+        container.appendChild(el);
+      });
+    } else {
+      // Smart update: reuse elements where possible
+      state.build.placedMachines.forEach(pm => {
+        let el = container.querySelector(`[data-placed-machine="${pm.id}"]`);
+        
+        if (el) {
+          // Element exists - update position
+          el.style.left = `${pm.x}px`;
+          el.style.top = `${pm.y}px`;
+          
+          // Check if we need to update content
+          const hasInsufficientInputs = checkInsufficientInputs(pm);
+          const shouldHaveInsufficient = el.classList.contains("has-insufficient-inputs");
+          
+          // Check if efficiency changed (for underclocking display)
+          const currentEfficiency = pm.efficiency !== undefined ? pm.efficiency : 1.0;
+          const storedEfficiency = parseFloat(el.dataset.efficiency || "1.0");
+          const efficiencyChanged = Math.abs(currentEfficiency - storedEfficiency) > 0.001;
+          
+          // Check if storage connections changed (storage machines need full redraw when connections change)
+          let storageConnectionsChanged = false;
+          if (pm.type === "machine" && pm.machineId) {
+            const machine = getMachineById(pm.machineId);
+            if (machine && machine.kind === "storage") {
+              const currentConnectionCount = 
+                state.build.connections.filter(c => c.fromMachineId === pm.id || c.toMachineId === pm.id).length;
+              const storedConnectionCount = parseInt(el.dataset.connectionCount || "0");
+              storageConnectionsChanged = currentConnectionCount !== storedConnectionCount;
+            }
+          }
+          
+          // If state changed, recreate the element
+          if (hasInsufficientInputs !== shouldHaveInsufficient || efficiencyChanged || storageConnectionsChanged) {
+            const newEl = createPlacedMachineElement(pm);
+            el.replaceWith(newEl);
+          }
+        } else {
+          // Element doesn't exist - create it
+          el = createPlacedMachineElement(pm);
+          container.appendChild(el);
+        }
+      });
+    }
     
     // Render connections
     renderConnections(svgEl);
+    
+    // Apply camera transform
+    updateCameraTransform();
+    
+    // Ensure selection classes are synced with state
+    updateSelectionClasses();
+    
+    // Schedule debounced production summary update if sidebar is open
+    scheduleProductionSummaryUpdate();
   }
   
   function createPlacedMachineElement(placedMachine) {
@@ -3800,14 +4925,196 @@
     const type = placedMachine.type || "machine";
     const count = placedMachine.count || 1;
     
-    const isSelected = state.build.selectedMachine === placedMachine.id;
+    const isSelected = state.build.selectedMachines.includes(placedMachine.id);
     const hasInsufficientInputs = checkInsufficientInputs(placedMachine);
     
     const el = document.createElement("div");
+    const selectionCount = state.build.selectedMachines.length;
+    const isMultiSelect = isSelected && selectionCount > 1;
     el.className = `buildMachine${isSelected ? " is-selected" : ""}${hasInsufficientInputs ? " has-insufficient-inputs" : ""}`;
     el.dataset.placedMachine = placedMachine.id;
+    
+    // Store efficiency for change detection
+    el.dataset.efficiency = String(placedMachine.efficiency !== undefined ? placedMachine.efficiency : 1.0);
+    
+    // Store connection count for storage machines (for change detection)
+    const connectionCount = state.build.connections.filter(c => 
+      c.fromMachineId === placedMachine.id || c.toMachineId === placedMachine.id
+    ).length;
+    el.dataset.connectionCount = String(connectionCount);
+    
+    // Position at world coordinates (container transform handles camera)
     el.style.left = `${placedMachine.x}px`;
     el.style.top = `${placedMachine.y}px`;
+    
+    // Add multi-selection badge if part of a group
+    if (isMultiSelect) {
+      el.style.setProperty('--selection-count', `"${selectionCount}"`);
+      el.classList.add('is-multi-selected');
+    }
+    
+    // Blueprint type (black box containing other machines)
+    if (type === "blueprint") {
+      const bpData = placedMachine.blueprintData || {};
+      const bpName = bpData.name || "Unnamed Blueprint";
+      const bpDescription = bpData.description || "";
+      const bpInputs = bpData.inputs || [];
+      const bpOutputs = bpData.outputs || [];
+      const bpMachines = bpData.machines || [];
+      
+      // Calculate actual machine count (with multipliers, recursively for nested blueprints)
+      const blueprintId = placedMachine.blueprintId;
+      const machineCounts = blueprintId ? calculateBlueprintMachineCounts(blueprintId) : { totalCount: bpMachines.length };
+      const actualMachineCount = machineCounts.totalCount;
+      
+      // Calculate stats from contained machines
+      let hasFurnaces = false;
+      let hasNurseries = false;
+      let totalFuelConsumption = 0;
+      let totalFertilizerProduction = 0;
+      let plantOutputRate = 0;
+      
+      bpMachines.forEach(machine => {
+        const machineData = getMachineById(machine.machineId);
+        if (machineData) {
+          if (machineData.kind === "heating_device") {
+            hasFurnaces = true;
+            // Calculate fuel consumption for this machine
+            let heatP = machineData.baseHeatConsumptionP || 0;
+            (machine.toppers || []).forEach(topper => {
+              const topperMachine = getMachineById(topper.machineId);
+              if (topperMachine) {
+                heatP += topperMachine.heatConsumptionP || 0;
+              }
+            });
+            totalFuelConsumption += heatP;
+          }
+          if (machineData.kind === "nursery") {
+            hasNurseries = true;
+            // Get plant output rate
+            const outputRate = getPortOutputRate(machine, "0") || 0;
+            plantOutputRate += outputRate;
+          }
+        }
+      });
+      
+      // Check if produces fertilizer
+      bpOutputs.forEach(output => {
+        const material = getMaterialById(output.materialId);
+        if (material && material.kind === "fertilizer") {
+          totalFertilizerProduction += output.rate;
+        }
+      });
+      
+      // Build input ports HTML (multiply rates by count)
+      const inputsHTML = bpInputs.map((input, idx) => {
+        const material = getMaterialById(input.materialId);
+        const materialName = material ? material.name : "Unknown";
+        const rate = input.rate * count;
+        return `
+          <div class="buildPort buildPort--input" data-input-port="${idx}" title="${materialName} - ${rate.toFixed(2)}/min">
+            <div class="buildPort__dot"></div>
+            <div class="buildPort__label">${escapeHtml(materialName)}</div>
+            <div class="buildPort__rate">${rate.toFixed(2)}/min</div>
+          </div>
+        `;
+      }).join("");
+      
+      // Build output ports HTML (multiply rates by count)
+      const outputsHTML = bpOutputs.map((output, idx) => {
+        const material = getMaterialById(output.materialId);
+        const materialName = material ? material.name : "Unknown";
+        const rate = output.rate * count;
+        return `
+          <div class="buildPort buildPort--output" data-output-port="${idx}" title="${materialName} - ${rate.toFixed(2)}/min">
+            <div class="buildPort__label">${escapeHtml(materialName)}</div>
+            <div class="buildPort__rate">${rate.toFixed(2)}/min</div>
+            <div class="buildPort__dot"></div>
+          </div>
+        `;
+      }).join("");
+      
+      // Build stats panels
+      let statsHTML = "";
+      
+      if (hasFurnaces) {
+        const fuelConsumption = totalFuelConsumption * count;
+        statsHTML += `
+          <div class="buildMachine__stats">
+            <div class="buildMachine__stat">
+              <div class="buildMachine__statLabel">🔥 Fuel Consumption</div>
+              <div class="buildMachine__statValue">${fuelConsumption.toFixed(2)}P</div>
+            </div>
+          </div>
+        `;
+      }
+      
+      if (hasNurseries) {
+        const plantOutput = plantOutputRate * count;
+        statsHTML += `
+          <div class="buildMachine__stats">
+            <div class="buildMachine__stat">
+              <div class="buildMachine__statLabel">🌱 Plant Output</div>
+              <div class="buildMachine__statValue">${plantOutput.toFixed(2)}/min</div>
+            </div>
+          </div>
+        `;
+      }
+      
+      if (totalFertilizerProduction > 0) {
+        const fertilizerProduction = totalFertilizerProduction * count;
+        const nurseriesSupported = Math.floor(fertilizerProduction / 4.17);
+        statsHTML += `
+          <div class="buildMachine__stats">
+            <div class="buildMachine__stat">
+              <div class="buildMachine__statLabel">🌿 Fertilizer Output</div>
+              <div class="buildMachine__statValue">${fertilizerProduction.toFixed(2)}/min</div>
+            </div>
+            <div class="buildMachine__stat">
+              <div class="buildMachine__statLabel">Supports Nurseries</div>
+              <div class="buildMachine__statValue">${nurseriesSupported}</div>
+            </div>
+          </div>
+        `;
+      }
+      
+      el.innerHTML = `
+        <div class="buildMachine__header">
+          <div class="buildMachine__title">📐 ${escapeHtml(bpName)} ${count > 1 ? `<span style="color: var(--accent);">(×${count})</span>` : ''}</div>
+          <div style="display: flex; gap: 4px;">
+            <button class="btn btn--sm" data-action="blueprint:edit" title="Edit Blueprint">✏️</button>
+            <button class="btn btn--sm" data-action="build:clone-machine" title="Clone">📋</button>
+            <button class="btn btn--danger btn--sm" data-action="build:delete-machine" title="Remove">✕</button>
+          </div>
+        </div>
+        <div class="buildMachine__body">
+          ${bpDescription ? `<div class="hint" style="margin-bottom: 8px;">${escapeHtml(bpDescription)}</div>` : ""}
+          <div class="hint" style="font-style: italic; color: var(--muted);">Blueprint containing ${actualMachineCount} machine${actualMachineCount !== 1 ? 's' : ''}</div>
+          <label style="font-size: 11px; color: var(--muted); display: block; margin-top: 8px; margin-bottom: 2px;">Quantity</label>
+          <input type="number" min="1" max="999" step="1" value="${count}" 
+            data-machine-count 
+            class="buildMachine__countInput"
+            style="width: 80px;" />
+          ${statsHTML}
+        </div>
+        <div class="buildMachine__ports">
+          ${bpInputs.length > 0 ? `
+            <div class="buildMachine__portGroup">
+              <div class="buildMachine__portLabel">Inputs</div>
+              ${inputsHTML}
+            </div>
+          ` : ""}
+          ${bpOutputs.length > 0 ? `
+            <div class="buildMachine__portGroup">
+              <div class="buildMachine__portLabel">Outputs</div>
+              ${outputsHTML}
+            </div>
+          ` : ""}
+        </div>
+      `;
+      
+      return el;
+    }
     
     // Purchasing Portal type
     if (type === "purchasing_portal") {
@@ -4561,11 +5868,16 @@
       `<option value="${r.id}" ${r.id === placedMachine.recipeId ? 'selected' : ''}>${escapeHtml(r.name)}</option>`
     ).join("");
     
+    const efficiency = placedMachine.efficiency !== undefined ? placedMachine.efficiency : 1.0;
+    const efficiencyPercent = (efficiency * 100).toFixed(1);
+    const isUnderclocked = efficiency < 0.999; // Show if less than 99.9%
+    
     el.innerHTML = `
       <div class="buildMachine__header">
         <div style="display: flex; align-items: center; gap: 8px; flex: 1;">
           <div class="buildMachine__title">${escapeHtml(machine.name)}</div>
           ${hasInsufficientInputs ? '<span class="buildMachine__warning" title="Insufficient inputs: upstream production or belt speed cannot meet demand">⚠️</span>' : ''}
+          ${isUnderclocked ? `<span style="font-size: 10px; padding: 2px 6px; background: rgba(255,165,0,0.2); border: 1px solid rgba(255,165,0,0.4); border-radius: 4px; color: #ffa500; font-weight: 600;" title="Machine is underclocked due to insufficient downstream demand">${efficiencyPercent}%</span>` : ''}
           <input 
             type="number" 
             class="buildMachine__countInput" 
@@ -4609,21 +5921,24 @@
     const CLEARANCE = 16;
     const obstacles = [];
     
-    document.querySelectorAll("[data-placed-machine]").forEach(machineEl => {
-      const machineId = machineEl.getAttribute("data-placed-machine");
-      
+    // Use machine data directly for world coordinates
+    state.build.placedMachines.forEach(pm => {
       // Skip excluded machines (source/target of current connection)
-      if (excludeMachineIds.includes(machineId)) return;
+      if (excludeMachineIds.includes(pm.id)) return;
       
-      const rect = machineEl.getBoundingClientRect();
-      const canvas = document.querySelector("#designCanvas");
-      const canvasRect = canvas.getBoundingClientRect();
+      // Get machine element to determine size (use DOM dimensions, not transformed)
+      const machineEl = document.querySelector(`[data-placed-machine="${pm.id}"]`);
+      if (!machineEl) return;
+      
+      // Use offsetWidth/Height which gives element dimensions without transform effects
+      const worldWidth = machineEl.offsetWidth;
+      const worldHeight = machineEl.offsetHeight;
       
       obstacles.push({
-        x1: rect.left - canvasRect.left + canvas.scrollLeft - CLEARANCE,
-        y1: rect.top - canvasRect.top + canvas.scrollTop - CLEARANCE,
-        x2: rect.right - canvasRect.left + canvas.scrollLeft + CLEARANCE,
-        y2: rect.bottom - canvasRect.top + canvas.scrollTop + CLEARANCE,
+        x1: pm.x - CLEARANCE,
+        y1: pm.y - CLEARANCE,
+        x2: pm.x + worldWidth + CLEARANCE,
+        y2: pm.y + worldHeight + CLEARANCE,
       });
     });
     
@@ -4835,80 +6150,176 @@
    * Calculate the actual transfer rate for a specific connection
    * based on downstream demand and available output
    */
+  /**
+   * Calculate rate distribution for all connections from a single output port
+   * Uses iterative redistribution algorithm:
+   * 1. Split equally among all connections
+   * 2. Cap each by demand and belt speed
+   * 3. Redistribute freed capacity to others
+   * 4. Repeat until all capacity used or no more redistribution possible
+   */
+  function distributeOutputRate(sourceMachine, fromPortIdx, totalAvailable) {
+    const siblingConnections = state.build.connections.filter(
+      conn => conn.fromMachineId === sourceMachine.id && 
+              String(conn.fromPortIdx) === String(fromPortIdx)
+    );
+    
+    if (siblingConnections.length === 0) return new Map();
+    
+    const beltSpeed = getConveyorSpeed();
+    const distribution = new Map(); // connectionId -> rate
+    
+    // Build demand info for each connection
+    const connectionInfo = siblingConnections.map(conn => {
+      const target = state.build.placedMachines.find(pm => pm.id === conn.toMachineId);
+      if (!target) {
+        return { conn, maxDemand: 0, currentRate: 0, satisfied: true };
+      }
+      
+      const targetMachineData = target.machineId ? getMachineById(target.machineId) : null;
+      const isStorage = targetMachineData && targetMachineData.kind === "storage";
+      const targetEfficiency = target.efficiency !== undefined ? target.efficiency : 1.0;
+      
+      let maxDemand = getPortInputDemand(target, conn.toPortIdx) * targetEfficiency;
+      
+      // Storage and belt speed caps
+      if (isStorage) {
+        maxDemand = Math.min(maxDemand, beltSpeed);
+      }
+      maxDemand = Math.min(maxDemand, beltSpeed);
+      
+      return {
+        conn,
+        maxDemand,
+        currentRate: 0,
+        satisfied: false
+      };
+    });
+    
+    let remaining = totalAvailable;
+    let changed = true;
+    const maxIterations = 10;
+    let iteration = 0;
+    
+    // Iterative redistribution
+    while (remaining > 0.01 && changed && iteration < maxIterations) {
+      changed = false;
+      iteration++;
+      
+      // Find unsatisfied connections
+      const unsatisfied = connectionInfo.filter(info => !info.satisfied);
+      
+      if (unsatisfied.length === 0) break;
+      
+      // Distribute remaining equally among unsatisfied
+      const share = remaining / unsatisfied.length;
+      
+      unsatisfied.forEach(info => {
+        const additionalCapacity = Math.min(share, info.maxDemand - info.currentRate);
+        
+        if (additionalCapacity > 0.01) {
+          info.currentRate += additionalCapacity;
+          remaining -= additionalCapacity;
+          changed = true;
+          
+          // Mark as satisfied if at max demand
+          if (info.currentRate >= info.maxDemand - 0.01) {
+            info.satisfied = true;
+          }
+        } else {
+          info.satisfied = true;
+        }
+      });
+    }
+    
+    // Build result map
+    connectionInfo.forEach(info => {
+      distribution.set(info.conn.id, info.currentRate);
+    });
+    
+    return distribution;
+  }
+  
   function getConnectionRate(connection) {
+    // Use cached rate if available and recent
+    if (connection.actualRate !== undefined && connection.lastCalculated) {
+      return connection.actualRate;
+    }
+    
     const sourceMachine = state.build.placedMachines.find(pm => pm.id === connection.fromMachineId);
     const targetMachine = state.build.placedMachines.find(pm => pm.id === connection.toMachineId);
     
     if (!sourceMachine || !targetMachine) return 0;
     
-    // Get total available output from this port
-    const totalAvailable = getPortOutputRate(sourceMachine, connection.fromPortIdx);
+    // Apply source machine efficiency to max output
+    const sourceEfficiency = sourceMachine.efficiency !== undefined ? sourceMachine.efficiency : 1.0;
+    const totalAvailable = getPortOutputRate(sourceMachine, connection.fromPortIdx) * sourceEfficiency;
     
-    // Find all connections from this same output port
-    const siblingConnections = state.build.connections.filter(
-      conn => conn.fromMachineId === connection.fromMachineId && 
-              conn.fromPortIdx === connection.fromPortIdx
-    );
+    // Use distribution algorithm
+    const distribution = distributeOutputRate(sourceMachine, connection.fromPortIdx, totalAvailable);
     
-    // If only one connection, it gets everything
-    if (siblingConnections.length === 1) {
-      // But cap at what the target needs
-      const targetDemand = getPortInputDemand(targetMachine, connection.toPortIdx);
-      if (targetDemand > 0) {
-        return Math.min(totalAvailable, targetDemand);
-      }
-      return totalAvailable;
-    }
-    
-    // Multiple connections - calculate demand for each
-    const demands = siblingConnections.map(conn => {
-      const target = state.build.placedMachines.find(pm => pm.id === conn.toMachineId);
-      if (!target) return { conn, demand: 0, isStorage: false };
-      
-      const targetMachineData = getMachineById(target.machineId);
-      const isStorage = targetMachineData && targetMachineData.kind === "storage";
-      const demand = getPortInputDemand(target, conn.toPortIdx);
-      return { conn, demand, isStorage };
-    });
-    
-    // Separate storage and non-storage demands
-    const fixedDemands = demands.filter(d => !d.isStorage);
-    const storageDemands = demands.filter(d => d.isStorage);
-    const totalFixedDemand = fixedDemands.reduce((sum, d) => sum + d.demand, 0);
-    
-    // If this is a storage connection
-    const thisEntry = demands.find(d => d.conn.id === connection.id);
-    if (thisEntry && thisEntry.isStorage) {
-      // Storage gets remainder after fixed demands, capped at belt speed
-      const remainder = Math.max(0, totalAvailable - totalFixedDemand);
-      const perStorage = storageDemands.length > 0 ? remainder / storageDemands.length : 0;
-      return Math.min(perStorage, getConveyorSpeed());
-    }
-    
-    // For non-storage connections
-    if (totalFixedDemand === 0) {
-      // No fixed demands, split available among all equally
-      return totalAvailable / siblingConnections.length;
-    }
-    
-    if (totalAvailable >= totalFixedDemand) {
-      // Enough for all fixed demands
-      return thisEntry ? thisEntry.demand : 0;
-    }
-    
-    // Not enough - distribute proportionally among fixed demands only
-    if (!thisEntry || thisEntry.demand === 0) {
-      return 0;
-    }
-    
-    return (thisEntry.demand / totalFixedDemand) * totalAvailable;
+    return distribution.get(connection.id) || 0;
   }
   
   function renderConnections(svgEl) {
     const svgNS = "http://www.w3.org/2000/svg";
     
+    // Clear existing connections from SVG
+    svgEl.innerHTML = "";
+    
     // Clear vertical line registry for this render cycle
     verticalLineRegistry.length = 0;
+    
+    // Track label positions to prevent overlaps
+    const labelPositions = [];
+    
+    /**
+     * Check if a bounding box overlaps with any existing labels
+     * @param {object} bbox - { x, y, width, height }
+     * @returns {boolean} True if overlap detected
+     */
+    function hasOverlap(bbox) {
+      return labelPositions.some(existing => {
+        return !(bbox.x + bbox.width < existing.x ||
+                 bbox.x > existing.x + existing.width ||
+                 bbox.y + bbox.height < existing.y ||
+                 bbox.y > existing.y + existing.height);
+      });
+    }
+    
+    /**
+     * Find a position offset that avoids overlaps
+     * @param {number} baseX - Base X position
+     * @param {number} baseY - Base Y position
+     * @param {number} width - Label width
+     * @param {number} height - Label height
+     * @returns {{ x: number, y: number }} Adjusted position
+     */
+    function findNonOverlappingPosition(baseX, baseY, width, height) {
+      const offsetStep = 25; // Vertical offset per collision
+      const maxAttempts = 10;
+      
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        // Alternate between moving up and down
+        const direction = attempt % 2 === 0 ? -1 : 1;
+        const offset = Math.ceil(attempt / 2) * offsetStep * direction;
+        
+        const testY = baseY + offset;
+        const testBbox = {
+          x: baseX - width / 2,
+          y: testY - height / 2,
+          width,
+          height
+        };
+        
+        if (!hasOverlap(testBbox)) {
+          return { x: baseX, y: testY };
+        }
+      }
+      
+      // If all attempts fail, return original position (rare edge case)
+      return { x: baseX, y: baseY };
+    }
     
     // Render existing connections
     state.build.connections.forEach(conn => {
@@ -4922,21 +6333,52 @@
       
       if (!fromPort || !toPort) return;
       
-      const fromRect = fromPort.getBoundingClientRect();
-      const toRect = toPort.getBoundingClientRect();
-      const canvas = svgEl.parentElement;
-      const canvasRect = canvas.getBoundingClientRect();
+      // Get machine data for world coordinates
+      const fromMachineData = state.build.placedMachines.find(pm => pm.id === conn.fromMachineId);
+      const toMachineData = state.build.placedMachines.find(pm => pm.id === conn.toMachineId);
       
-      const x1 = fromRect.right - canvasRect.left + canvas.scrollLeft;
-      const y1 = fromRect.top + fromRect.height / 2 - canvasRect.top + canvas.scrollTop;
-      const x2 = toRect.left - canvasRect.left + canvas.scrollLeft;
-      const y2 = toRect.top + toRect.height / 2 - canvasRect.top + canvas.scrollTop;
+      if (!fromMachineData || !toMachineData) return;
       
-      // Get card positions for proper midpoint calculation
-      const fromMachineRect = fromMachine.getBoundingClientRect();
-      const toMachineRect = toMachine.getBoundingClientRect();
-      const fromCardRight = fromMachineRect.right - canvasRect.left + canvas.scrollLeft;
-      const toCardLeft = toMachineRect.left - canvasRect.left + canvas.scrollLeft;
+      // Calculate port positions in world space using DOM element positions (not getBoundingClientRect)
+      // This avoids issues with the container transform
+      
+      // Helper to get element position relative to its positioned parent
+      function getRelativePosition(element, parent) {
+        let x = 0;
+        let y = 0;
+        let current = element;
+        
+        while (current && current !== parent) {
+          x += current.offsetLeft || 0;
+          y += current.offsetTop || 0;
+          current = current.offsetParent;
+          if (current === parent) break;
+        }
+        
+        return { x, y };
+      }
+      
+      // Get port positions relative to machine card
+      const fromPortPos = getRelativePosition(fromPort, fromMachine);
+      const toPortPos = getRelativePosition(toPort, toMachine);
+      
+      // Output port: right edge, vertical center
+      const fromPortOffsetX = fromPortPos.x + fromPort.offsetWidth;
+      const fromPortOffsetY = fromPortPos.y + (fromPort.offsetHeight / 2);
+      
+      // Input port: left edge, vertical center
+      const toPortOffsetX = toPortPos.x;
+      const toPortOffsetY = toPortPos.y + (toPort.offsetHeight / 2);
+      
+      // World coordinates for connection endpoints
+      const x1 = fromMachineData.x + fromPortOffsetX;
+      const y1 = fromMachineData.y + fromPortOffsetY;
+      const x2 = toMachineData.x + toPortOffsetX;
+      const y2 = toMachineData.y + toPortOffsetY;
+      
+      // Card edges for midpoint calculation (using DOM element width, not transformed)
+      const fromCardRight = fromMachineData.x + fromMachine.offsetWidth;
+      const toCardLeft = toMachineData.x;
       
       // Determine if this is a loopback connection (output right of input)
       const isLoopback = x1 > x2;
@@ -4976,13 +6418,21 @@
       const targetDemand = targetPlacedMachine ? getPortInputDemand(targetPlacedMachine, conn.toPortIdx) : 0;
       
       // Check if insufficient: get ALL connections to this same input port
+      // IMPORTANT: Storage machines don't have "demand" - their input "demand" is just a capacity cap
+      // so we should never mark storage connections as insufficient
       let isInsufficient = false;
-      if (targetDemand > 0) {
-        const allIncomingToPort = state.build.connections.filter(
-          c => c.toMachineId === conn.toMachineId && c.toPortIdx === conn.toPortIdx
-        );
-        const totalIncoming = allIncomingToPort.reduce((sum, c) => sum + getConnectionRate(c), 0);
-        isInsufficient = totalIncoming < targetDemand - 0.01;
+      if (targetDemand > 0 && targetPlacedMachine) {
+        const targetMachineData = getMachineById(targetPlacedMachine.machineId);
+        const isTargetStorage = targetMachineData && targetMachineData.kind === "storage";
+        
+        // Only check insufficiency for non-storage machines
+        if (!isTargetStorage) {
+          const allIncomingToPort = state.build.connections.filter(
+            c => c.toMachineId === conn.toMachineId && c.toPortIdx === conn.toPortIdx
+          );
+          const totalIncoming = allIncomingToPort.reduce((sum, c) => sum + getConnectionRate(c), 0);
+          isInsufficient = totalIncoming < targetDemand - 0.01;
+        }
       }
       
       // Style based on selection state and sufficiency
@@ -5056,23 +6506,31 @@
           const beltSpeed = getConveyorSpeed();
           const conveyorsNeeded = Math.ceil(rate / beltSpeed);
           
-          // Create a group for the label
-          const labelGroup = document.createElementNS(svgNS, "g");
-          labelGroup.setAttribute("transform", `translate(${labelX}, ${labelY})`);
-          
-          // Background rectangle
+          // Build label text
           let labelText = `${material.name} ${arrow} ${rate.toFixed(2)}/min (${conveyorsNeeded}x)`;
           if (isInsufficient && targetDemand > 0) {
             labelText = `⚠ ${labelText} (need ${targetDemand.toFixed(2)})`;
           }
+          
+          // Calculate label dimensions
           const textWidth = labelText.length * 6; // Rough estimate
           const padding = 6;
+          const labelWidth = textWidth + padding * 2;
+          const labelHeight = 20;
           
+          // Find non-overlapping position
+          const adjustedPos = findNonOverlappingPosition(labelX, labelY, labelWidth, labelHeight);
+          
+          // Create a group for the label at adjusted position
+          const labelGroup = document.createElementNS(svgNS, "g");
+          labelGroup.setAttribute("transform", `translate(${adjustedPos.x}, ${adjustedPos.y})`);
+          
+          // Background rectangle
           const rect = document.createElementNS(svgNS, "rect");
-          rect.setAttribute("x", -textWidth / 2 - padding);
-          rect.setAttribute("y", -10);
-          rect.setAttribute("width", textWidth + padding * 2);
-          rect.setAttribute("height", 20);
+          rect.setAttribute("x", -labelWidth / 2);
+          rect.setAttribute("y", -labelHeight / 2);
+          rect.setAttribute("width", labelWidth);
+          rect.setAttribute("height", labelHeight);
           rect.setAttribute("fill", "#151923");
           rect.setAttribute("stroke", lineColor);
           rect.setAttribute("stroke-width", "1");
@@ -5093,6 +6551,14 @@
           labelGroup.appendChild(rect);
           labelGroup.appendChild(text);
           svgEl.appendChild(labelGroup);
+          
+          // Store this label's position to prevent future overlaps
+          labelPositions.push({
+            x: adjustedPos.x - labelWidth / 2,
+            y: adjustedPos.y - labelHeight / 2,
+            width: labelWidth,
+            height: labelHeight
+          });
         }
       }
     });
@@ -5123,14 +6589,17 @@
     if (!machine) return;
     
     const id = makeId("pm");
+    
+    // Place new machines at camera position with a stagger offset
+    const offset = state.build.placedMachines.length * 50;
     const placedMachine = {
       id,
       type: "machine",
       machineId,
       recipeId: null,
       count: 1,
-      x: 100 + state.build.placedMachines.length * 50,
-      y: 100 + state.build.placedMachines.length * 50,
+      x: state.build.camera.x + offset,
+      y: state.build.camera.y + offset,
     };
     
     // Initialize storage-specific fields
@@ -5160,8 +6629,8 @@
       machineId: null, // No machine selected yet
       recipeId: null,
       count: 1,
-      x: x || 100,
-      y: y || 100,
+      x: x !== undefined ? x : state.build.camera.x,
+      y: y !== undefined ? y : state.build.camera.y,
     };
     
     state.build.placedMachines.push(placedMachine);
@@ -5206,8 +6675,8 @@
       recipeId: null,
       count: 1,
       materialId: null, // Material to purchase
-      x: x || 100,
-      y: y || 100,
+      x: x !== undefined ? x : state.build.camera.x,
+      y: y !== undefined ? y : state.build.camera.y,
     };
     
     state.build.placedMachines.push(placedMachine);
@@ -5225,8 +6694,8 @@
       recipeId: null,
       count: 1,
       fuelId: null, // Fuel material
-      x: x || 100,
-      y: y || 100,
+      x: x !== undefined ? x : state.build.camera.x,
+      y: y !== undefined ? y : state.build.camera.y,
     };
     
     state.build.placedMachines.push(placedMachine);
@@ -5245,8 +6714,8 @@
       count: 1,
       plantId: null, // Plant material
       fertilizerId: null, // Fertilizer material (for preview when not connected)
-      x: x || 100,
-      y: y || 100,
+      x: x !== undefined ? x : state.build.camera.x,
+      y: y !== undefined ? y : state.build.camera.y,
     };
     
     state.build.placedMachines.push(placedMachine);
@@ -5293,7 +6762,7 @@
     );
     
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreation since machine content changed
     
     if (machine) {
       setStatus(`Machine type changed to ${machine.name}.`);
@@ -5301,15 +6770,17 @@
   }
   
   function selectPlacedMachine(machineId) {
-    state.build.selectedMachine = machineId;
+    state.build.selectedMachines = [machineId];
     state.build.selectedConnection = null; // Deselect any selected connection
-    renderCanvas();
+    updateSelectionClasses();
+    renderCanvas(); // Re-render for connection selection state
   }
   
   function selectConnection(connectionId) {
     state.build.selectedConnection = connectionId;
-    state.build.selectedMachine = null; // Deselect any selected machine
-    renderCanvas();
+    state.build.selectedMachines = []; // Deselect any selected machines
+    updateSelectionClasses();
+    renderCanvas(); // Re-render for connection selection state
   }
   
   function clonePlacedMachine(machineId) {
@@ -5358,6 +6829,77 @@
     setStatus(`Machine cloned successfully.`);
   }
   
+  function centerAllMachinesAtOrigin() {
+    if (state.build.placedMachines.length === 0) {
+      setStatus("No machines to center.", "error");
+      return;
+    }
+    
+    // Calculate bounding box of all machines
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    
+    state.build.placedMachines.forEach(pm => {
+      const machineEl = document.querySelector(`[data-placed-machine="${pm.id}"]`);
+      if (!machineEl) return;
+      
+      const width = machineEl.offsetWidth;
+      const height = machineEl.offsetHeight;
+      
+      minX = Math.min(minX, pm.x);
+      minY = Math.min(minY, pm.y);
+      maxX = Math.max(maxX, pm.x + width);
+      maxY = Math.max(maxY, pm.y + height);
+    });
+    
+    // Calculate center of bounding box
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    
+    // Calculate offset to move center to origin
+    const offsetX = -centerX;
+    const offsetY = -centerY;
+    
+    // Apply offset to all machines
+    state.build.placedMachines.forEach(pm => {
+      pm.x += offsetX;
+      pm.y += offsetY;
+    });
+    
+    saveBuild();
+    renderCanvas(true); // Force recreate to update positions
+    setStatus("All machines centered at origin.");
+  }
+  
+  function deleteSelectedMachines() {
+    if (state.build.selectedMachines.length === 0) return;
+    
+    const count = state.build.selectedMachines.length;
+    const confirmMsg = count === 1 
+      ? "Remove this machine and all its connections from the canvas?"
+      : `Remove ${count} machines and all their connections from the canvas?`;
+    
+    if (!confirm(confirmMsg)) return;
+    
+    // Remove all selected machines
+    state.build.placedMachines = state.build.placedMachines.filter(
+      pm => !state.build.selectedMachines.includes(pm.id)
+    );
+    
+    // Remove all connections to/from selected machines
+    state.build.connections = state.build.connections.filter(conn => 
+      !state.build.selectedMachines.includes(conn.fromMachineId) && 
+      !state.build.selectedMachines.includes(conn.toMachineId)
+    );
+    
+    state.build.selectedMachines = [];
+    saveBuild();
+    renderCanvas();
+    setStatus(`${count} machine${count > 1 ? 's' : ''} removed from canvas.`);
+  }
+  
   function deletePlacedMachine(machineId) {
     if (!confirm("Remove this machine and all its connections from the canvas?")) return;
     
@@ -5366,9 +6908,8 @@
       conn => conn.fromMachineId !== machineId && conn.toMachineId !== machineId
     );
     
-    if (state.build.selectedMachine === machineId) {
-      state.build.selectedMachine = null;
-    }
+    // Remove from selection if selected
+    state.build.selectedMachines = state.build.selectedMachines.filter(id => id !== machineId);
     
     saveBuild();
     renderCanvas();
@@ -5413,26 +6954,10 @@
     }
     
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreation since recipe changed
   }
   
   // ---------- Production Summary ----------
-  
-  function showProductionDialog() {
-    const dialog = $("#productionDialog");
-    if (!dialog) return;
-    
-    renderProductionSummary();
-    dialog.classList.remove("hidden");
-    
-    // Close on overlay click
-    const overlay = dialog.querySelector(".dialog__overlay");
-    if (overlay) {
-      overlay.onclick = () => {
-        dialog.classList.add("hidden");
-      };
-    }
-  }
   
   function renderProductionSummary() {
     const summary = $("#productionSummary");
@@ -5515,10 +7040,1354 @@
     }
     html += `</div>`;
     
+    // Storage fill times (only show storages with net positive rates)
+    const storages = state.build.placedMachines.filter(pm => {
+      if (!pm.machineId) return false;
+      const machine = getMachineById(pm.machineId);
+      return machine && machine.kind === "storage";
+    });
+    
+    if (storages.length > 0) {
+      html += `<div class="productionSection">
+        <div class="productionSection__title">Storage Fill Times</div>`;
+      
+      let hasAnyFillingStorage = false;
+      storages.forEach(pm => {
+        const inventories = calculateStorageInventory(pm);
+        const machine = getMachineById(pm.machineId);
+        
+        inventories.forEach(inv => {
+          // Only show materials with positive net rate (filling)
+          if (inv.netRate > 0.01 && inv.timeToFillMinutes !== null && isFinite(inv.timeToFillMinutes)) {
+            hasAnyFillingStorage = true;
+            const timeStr = formatTimeMinutes(inv.timeToFillMinutes);
+            html += `<div class="productionItem">
+              <strong>${escapeHtml(machine.name)}</strong> - ${escapeHtml(inv.materialName)}: 
+              <span style="color: var(--ok);">Fills in ${timeStr}</span> 
+              <span style="color: var(--muted); font-size: 10px;">@ ${inv.inputRate.toFixed(1)}/min</span>
+            </div>`;
+          }
+        });
+      });
+      
+      if (!hasAnyFillingStorage) {
+        html += `<div class="hint">No storages are currently filling. Connect inputs to storages to see fill times.</div>`;
+      }
+      
+      html += `</div>`;
+    }
+    
     summary.innerHTML = html;
   }
   
   // ---------- Skills Dialog ----------
+  
+  function openJumpToCoordinatesDialog() {
+    const dialog = $("#jumpToCoordinatesDialog");
+    if (!dialog) return;
+    
+    // Pre-fill with current camera position
+    const xInput = $("#jumpToX");
+    const yInput = $("#jumpToY");
+    if (xInput) xInput.value = Math.round(state.build.camera.x);
+    if (yInput) yInput.value = Math.round(state.build.camera.y);
+    
+    dialog.classList.remove("hidden");
+    
+    // Focus on X input
+    setTimeout(() => xInput?.select(), 100);
+    
+    // Handle Enter key to jump
+    const handleKeyPress = (e) => {
+      if (e.key === "Enter") {
+        jumpToCoordinates();
+        dialog.removeEventListener("keypress", handleKeyPress);
+      } else if (e.key === "Escape") {
+        closeDialog();
+        dialog.removeEventListener("keypress", handleKeyPress);
+      }
+    };
+    dialog.addEventListener("keypress", handleKeyPress);
+    
+    // Close on overlay click
+    const overlay = dialog.querySelector(".dialog__overlay");
+    if (overlay) {
+      overlay.onclick = closeDialog;
+    }
+  }
+  
+  function jumpToCoordinates() {
+    const xInput = $("#jumpToX");
+    const yInput = $("#jumpToY");
+    
+    if (!xInput || !yInput) return;
+    
+    const x = parseFloat(xInput.value) || 0;
+    const y = parseFloat(yInput.value) || 0;
+    
+    // Move camera to specified coordinates
+    state.build.camera.x = x;
+    state.build.camera.y = y;
+    
+    saveBuild();
+    updateCameraTransform();
+    closeDialog();
+    setStatus(`Jumped to (${Math.round(x)}, ${Math.round(y)})`);
+  }
+  
+  // ---------- Sidebar Management ----------
+  
+  function toggleDatabaseSidebar() {
+    const wasOpen = state.ui.sidebars.database;
+    
+    // Clear any pending production summary updates when closing production sidebar
+    if (state.ui.productionSummaryDebounceTimer) {
+      clearTimeout(state.ui.productionSummaryDebounceTimer);
+      state.ui.productionSummaryDebounceTimer = null;
+    }
+    
+    // Close left sidebars (only one left panel can be open at a time)
+    state.ui.sidebars.database = false;
+    state.ui.sidebars.blueprints = false;
+    $("#databaseSidebar")?.classList.add("hidden");
+    $("#blueprintsSidebar")?.classList.add("hidden");
+    
+    // If it wasn't open, open it now
+    if (!wasOpen) {
+      state.ui.sidebars.database = true;
+      $("#databaseSidebar")?.classList.remove("hidden");
+    }
+    
+    // Update grid layout
+    updateLayoutGridColumns();
+    
+    // Save UI preferences
+    saveUIPrefs();
+    
+    // Update camera transform after layout change (canvas dimensions may have changed)
+    setTimeout(() => updateCameraTransform(), 0);
+  }
+  
+  function toggleBlueprintsSidebar() {
+    const wasOpen = state.ui.sidebars.blueprints;
+    
+    // Clear any pending production summary updates when closing production sidebar
+    if (state.ui.productionSummaryDebounceTimer) {
+      clearTimeout(state.ui.productionSummaryDebounceTimer);
+      state.ui.productionSummaryDebounceTimer = null;
+    }
+    
+    // Close left sidebars (only one left panel can be open at a time)
+    state.ui.sidebars.database = false;
+    state.ui.sidebars.blueprints = false;
+    $("#databaseSidebar")?.classList.add("hidden");
+    $("#blueprintsSidebar")?.classList.add("hidden");
+    
+    // If it wasn't open, open it now
+    if (!wasOpen) {
+      state.ui.sidebars.blueprints = true;
+      $("#blueprintsSidebar")?.classList.remove("hidden");
+    }
+    
+    // Update grid layout
+    updateLayoutGridColumns();
+    
+    // Save UI preferences
+    saveUIPrefs();
+    
+    // Update camera transform after layout change (canvas dimensions may have changed)
+    setTimeout(() => updateCameraTransform(), 0);
+  }
+  
+  /**
+   * Update layout grid columns based on which sidebars are open
+   */
+  function updateLayoutGridColumns() {
+    const layout = $(".layout");
+    if (!layout) return;
+    
+    const leftOpen = state.ui.sidebars.database || state.ui.sidebars.blueprints;
+    const rightOpen = state.ui.sidebars.production;
+    
+    if (leftOpen && rightOpen) {
+      // Both sides open: left panel, canvas, right panel
+      layout.style.gridTemplateColumns = "auto 1fr auto";
+    } else if (leftOpen && !rightOpen) {
+      // Only left panel open: left panel, canvas
+      layout.style.gridTemplateColumns = "auto 1fr";
+    } else if (!leftOpen && rightOpen) {
+      // Only right panel open: canvas, right panel
+      layout.style.gridTemplateColumns = "1fr auto";
+    } else {
+      // No panels open: just canvas
+      layout.style.gridTemplateColumns = "1fr";
+    }
+  }
+  
+  /**
+   * Debounced production summary recalculation
+   * Schedules a recalculation after 500ms of inactivity
+   * Only recalculates if the production sidebar is open
+   */
+  function scheduleProductionSummaryUpdate() {
+    // Only schedule if production sidebar is open
+    if (!state.ui.sidebars.production) return;
+    
+    // Clear existing timer
+    if (state.ui.productionSummaryDebounceTimer) {
+      clearTimeout(state.ui.productionSummaryDebounceTimer);
+    }
+    
+    // Schedule new calculation
+    state.ui.productionSummaryDebounceTimer = setTimeout(() => {
+      if (state.ui.sidebars.production) {
+        renderProductionSummary();
+      }
+    }, 500); // 500ms debounce delay
+  }
+  
+  function toggleProductionSidebar() {
+    const wasOpen = state.ui.sidebars.production;
+    
+    // Clear any pending production summary updates
+    if (state.ui.productionSummaryDebounceTimer) {
+      clearTimeout(state.ui.productionSummaryDebounceTimer);
+      state.ui.productionSummaryDebounceTimer = null;
+    }
+    
+    // Toggle only production sidebar (can coexist with left panels)
+    state.ui.sidebars.production = !wasOpen;
+    
+    if (state.ui.sidebars.production) {
+      $("#productionSidebar")?.classList.remove("hidden");
+      // Render production summary immediately when opening
+      renderProductionSummary();
+    } else {
+      $("#productionSidebar")?.classList.add("hidden");
+    }
+    
+    // Update grid layout
+    updateLayoutGridColumns();
+    
+    // Save UI preferences
+    saveUIPrefs();
+    
+    // Update camera transform after layout change (canvas dimensions may have changed)
+    setTimeout(() => updateCameraTransform(), 0);
+  }
+  
+  // ---------- Blueprint Management ----------
+  
+  function updateCreateBlueprintButton() {
+    const btn = $("#createBlueprintBtn");
+    if (!btn) return;
+    
+    // Enable button only when machines are selected
+    if (state.build.selectedMachines.length > 0) {
+      btn.disabled = false;
+    } else {
+      btn.disabled = true;
+    }
+  }
+  
+  function openCreateBlueprintDialog() {
+    if (state.build.selectedMachines.length === 0) {
+      setStatus("Please select one or more machines to create a blueprint.", "warning");
+      return;
+    }
+    
+    const dialog = $("#createBlueprintDialog");
+    if (!dialog) return;
+    
+    // Calculate blueprint analysis (blueprints can now contain other blueprints - nesting allowed)
+    let analysis;
+    try {
+      console.log("Starting blueprint analysis...");
+      analysis = analyzeBlueprintMachines(state.build.selectedMachines);
+      console.log("Analysis complete:", analysis);
+    } catch (err) {
+      console.error("Error analyzing blueprint:", err);
+      setStatus("Error analyzing blueprint: " + err.message, "error");
+      return;
+    }
+    
+    // Populate included machines list
+    const includedEl = $("#blueprintIncludedMachines");
+    if (includedEl) {
+      includedEl.innerHTML = analysis.machines.map(pm => {
+        let machineName = "Unknown";
+        
+        // Handle special machine types
+        if (pm.type === "purchasing_portal") {
+          machineName = "Purchasing Portal";
+        } else if (pm.type === "fuel_source") {
+          machineName = "Fuel Source";
+        } else if (pm.type === "nursery") {
+          machineName = "Nursery";
+        } else if (pm.type === "blueprint") {
+          machineName = pm.blueprintData?.name || "Blueprint";
+        } else {
+          const machine = getMachineById(pm.machineId);
+          machineName = machine ? machine.name : "Unknown";
+        }
+        
+        return `<div style="padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,.04);">${machineName} ${pm.count > 1 ? `(×${pm.count})` : ''}</div>`;
+      }).join('');
+    }
+    
+    // Populate inputs
+    const inputsEl = $("#blueprintInputs");
+    if (inputsEl) {
+      if (analysis.inputs.length === 0) {
+        inputsEl.innerHTML = '<em>No external inputs required</em>';
+      } else {
+        inputsEl.innerHTML = analysis.inputs.map(input => {
+          const material = getMaterialById(input.materialId);
+          const materialName = material ? material.name : "Unknown";
+          return `<div>• ${materialName}: ${input.rate.toFixed(2)}/min</div>`;
+        }).join('');
+      }
+    }
+    
+    // Populate outputs
+    const outputsEl = $("#blueprintOutputs");
+    if (outputsEl) {
+      if (analysis.outputs.length === 0) {
+        outputsEl.innerHTML = '<em>No external outputs</em>';
+      } else {
+        outputsEl.innerHTML = analysis.outputs.map(output => {
+          const material = getMaterialById(output.materialId);
+          const materialName = material ? material.name : "Unknown";
+          return `<div>• ${materialName}: ${output.rate.toFixed(2)}/min</div>`;
+        }).join('');
+      }
+    }
+    
+    // Clear form inputs
+    const nameInput = $("#blueprintName");
+    const descInput = $("#blueprintDescription");
+    if (nameInput) nameInput.value = "";
+    if (descInput) descInput.value = "";
+    
+    dialog.classList.remove("hidden");
+    if (nameInput) nameInput.focus();
+    
+    // Close on overlay click
+    const overlay = dialog.querySelector(".dialog__overlay");
+    if (overlay) {
+      overlay.onclick = closeDialog;
+    }
+  }
+  
+  function analyzeBlueprintMachines(selectedMachineIds) {
+    console.log("=== Blueprint Analysis Start ===");
+    console.log("Selected machine IDs:", selectedMachineIds);
+    
+    const selectedSet = new Set(selectedMachineIds);
+    const machines = state.build.placedMachines.filter(pm => selectedSet.has(pm.id));
+    console.log("Machines to analyze:", machines.length);
+    
+    // Calculate what each machine produces/consumes
+    const productionRates = calculateProductionFlow(selectedMachineIds);
+    
+    // Track net flows by material
+    const inputsMap = new Map(); // Materials flowing INTO the blueprint from outside
+    const outputsMap = new Map(); // Materials flowing OUT of the blueprint to outside
+    
+    // Check all connections to find boundary crossings
+    state.build.connections.forEach(conn => {
+      const fromInside = selectedSet.has(conn.fromMachineId);
+      const toInside = selectedSet.has(conn.toMachineId);
+      
+      // Skip internal connections
+      if (fromInside && toInside) return;
+      
+      const rate = getConnectionRate(conn);
+      if (!rate) return;
+      
+      const sourceMachine = state.build.placedMachines.find(m => m.id === conn.fromMachineId);
+      if (!sourceMachine) return;
+      
+      const materialId = getMaterialIdFromPort(sourceMachine, conn.fromPortIdx, "output");
+      if (!materialId) return;
+      
+      if (!fromInside && toInside) {
+        // Connection from outside TO inside = input
+        inputsMap.set(materialId, (inputsMap.get(materialId) || 0) + rate);
+        console.log(`Input: ${getMaterialById(materialId)?.name} @ ${rate}/min from outside`);
+      } else if (fromInside && !toInside) {
+        // Connection from inside TO outside = output
+        outputsMap.set(materialId, (outputsMap.get(materialId) || 0) + rate);
+        console.log(`Output: ${getMaterialById(materialId)?.name} @ ${rate}/min to outside`);
+      }
+    });
+    
+    // Also check for unconnected ports (these are also external inputs/outputs)
+    machines.forEach(pm => {
+      const rates = productionRates.get(pm.id);
+      if (!rates) return;
+      
+      // Check inputs without connections
+      rates.inputs.forEach(inp => {
+        if (!inp.materialId) return;
+        
+        // Find incoming connections for this input
+        const incomingConnections = state.build.connections.filter(conn => 
+          conn.toMachineId === pm.id
+        );
+        
+        // Check if this specific material is being supplied
+        let suppliedRate = 0;
+        incomingConnections.forEach(conn => {
+          const sourceMachine = state.build.placedMachines.find(m => m.id === conn.fromMachineId);
+          if (!sourceMachine) return;
+          const connMaterialId = getMaterialIdFromPort(sourceMachine, conn.fromPortIdx, "output");
+          if (connMaterialId === inp.materialId) {
+            suppliedRate += getConnectionRate(conn);
+          }
+        });
+        
+        // If not fully supplied, the deficit is an external input
+        if (suppliedRate < inp.rate - 0.01) {
+          const deficit = inp.rate - suppliedRate;
+          inputsMap.set(inp.materialId, (inputsMap.get(inp.materialId) || 0) + deficit);
+          console.log(`Unconnected input: ${getMaterialById(inp.materialId)?.name} @ ${deficit}/min (deficit)`);
+        }
+      });
+      
+      // Check outputs without connections
+      // Skip this check for infinite source machines (purchasing_portal, fuel_source)
+      // They only produce what's needed downstream, excess capacity isn't an "output"
+      const isInfiniteSource = pm.type === "purchasing_portal" || pm.type === "fuel_source";
+      
+      if (!isInfiniteSource) {
+        rates.outputs.forEach(out => {
+          if (!out.materialId) return;
+          
+          // Find outgoing connections for this output
+          const outgoingConnections = state.build.connections.filter(conn => 
+            conn.fromMachineId === pm.id
+          );
+          
+          // Calculate how much is consumed
+          let consumedRate = 0;
+          outgoingConnections.forEach(conn => {
+            consumedRate += getConnectionRate(conn);
+          });
+          
+          // If not fully consumed, the surplus is an external output
+          if (consumedRate < out.rate - 0.01) {
+            const surplus = out.rate - consumedRate;
+            outputsMap.set(out.materialId, (outputsMap.get(out.materialId) || 0) + surplus);
+            console.log(`Unconnected output: ${getMaterialById(out.materialId)?.name} @ ${surplus}/min (surplus)`);
+          }
+        });
+      }
+    });
+    
+    // Convert maps to arrays
+    const inputs = Array.from(inputsMap.entries()).map(([materialId, rate]) => ({
+      materialId,
+      rate,
+    }));
+    
+    const outputs = Array.from(outputsMap.entries()).map(([materialId, rate]) => ({
+      materialId,
+      rate,
+    }));
+    
+    console.log("\n=== Blueprint Analysis Results ===");
+    console.log("Inputs:", inputs);
+    console.log("Outputs:", outputs);
+    console.log("=== End Analysis ===\n");
+    
+    return {
+      machines,
+      inputs,
+      outputs,
+    };
+  }
+  
+  function saveBlueprintFromDialog() {
+    const nameInput = $("#blueprintName");
+    const descInput = $("#blueprintDescription");
+    
+    if (!nameInput) return;
+    
+    const name = nameInput.value.trim();
+    if (!name) {
+      setStatus("Blueprint name is required.", "error");
+      nameInput.focus();
+      return;
+    }
+    
+    const description = descInput?.value.trim() || "";
+    
+    // Get the analysis again
+    const analysis = analyzeBlueprintMachines(state.build.selectedMachines);
+    
+    // Deep copy the machines (excluding their x, y positions - we'll calculate relative positions)
+    const firstMachine = analysis.machines[0];
+    const originX = firstMachine.x;
+    const originY = firstMachine.y;
+    
+    // Create a mapping from current IDs to blueprint template IDs
+    const idToBlueprintId = new Map();
+    
+    const machines = analysis.machines.map((pm, idx) => {
+      // Deep copy machine data
+      const copy = JSON.parse(JSON.stringify(pm));
+      // Store relative position from first machine
+      copy.x = pm.x - originX;
+      copy.y = pm.y - originY;
+      // Use a sequential ID for blueprint template
+      const blueprintId = `bpm_${idx}`;
+      idToBlueprintId.set(pm.id, blueprintId);
+      copy.blueprintMachineId = blueprintId;
+      delete copy.id; // Will be assigned when placed
+      return copy;
+    });
+    
+    // Deep copy connections between selected machines with mapped IDs
+    const selectedSet = new Set(state.build.selectedMachines);
+    const connections = state.build.connections
+      .filter(conn => selectedSet.has(conn.fromMachineId) && selectedSet.has(conn.toMachineId))
+      .map(conn => {
+        return {
+          fromMachineId: idToBlueprintId.get(conn.fromMachineId),
+          fromPortIdx: conn.fromPortIdx,
+          toMachineId: idToBlueprintId.get(conn.toMachineId),
+          toPortIdx: conn.toPortIdx,
+        };
+      });
+    
+    // Create blueprint object
+    const blueprint = {
+      id: makeId("bp"),
+      name,
+      description,
+      machines,
+      connections,
+      inputs: analysis.inputs,
+      outputs: analysis.outputs,
+      createdAt: new Date().toISOString(),
+    };
+    
+    // Add to database
+    state.db.blueprints.push(blueprint);
+    
+    // Invalidate cache since we added a new blueprint
+    invalidateBlueprintCountCache(blueprint.id);
+    
+    saveDb();
+    renderBlueprintsList();
+    
+    // Replace selected machines with blueprint instance
+    replaceSelectionWithBlueprint(blueprint, selectedSet, analysis);
+    
+    closeDialog();
+    setStatus(`Blueprint "${name}" created and placed on canvas.`);
+  }
+  
+  function replaceSelectionWithBlueprint(blueprint, selectedSet, analysis) {
+    // Calculate center position of selected machines
+    const selectedMachines = state.build.placedMachines.filter(pm => selectedSet.has(pm.id));
+    if (selectedMachines.length === 0) return;
+    
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    selectedMachines.forEach(pm => {
+      minX = Math.min(minX, pm.x);
+      minY = Math.min(minY, pm.y);
+      maxX = Math.max(maxX, pm.x + 300); // Approximate machine width
+      maxY = Math.max(maxY, pm.y + 200); // Approximate machine height
+    });
+    
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    
+    // Find external connections (connections crossing the selection boundary)
+    // IMPORTANT: Capture material IDs BEFORE deleting machines
+    const externalConnections = [];
+    state.build.connections.forEach(conn => {
+      const fromInside = selectedSet.has(conn.fromMachineId);
+      const toInside = selectedSet.has(conn.toMachineId);
+      
+      if (fromInside !== toInside) {
+        // Connection crosses boundary - capture material ID now
+        let materialId = null;
+        
+        if (fromInside) {
+          // Output connection - get material from source machine (inside)
+          const sourceMachine = state.build.placedMachines.find(pm => pm.id === conn.fromMachineId);
+          if (sourceMachine) {
+            materialId = getMaterialIdFromPort(sourceMachine, conn.fromPortIdx, "output");
+          }
+        } else {
+          // Input connection - get material from source machine (outside)
+          const sourceMachine = state.build.placedMachines.find(pm => pm.id === conn.fromMachineId);
+          if (sourceMachine) {
+            materialId = getMaterialIdFromPort(sourceMachine, conn.fromPortIdx, "output");
+          }
+        }
+        
+        externalConnections.push({
+          ...conn,
+          fromInside,
+          toInside,
+          materialId // Store material ID for reconnection
+        });
+      }
+    });
+    
+    // Create blueprint instance
+    const blueprintInstance = {
+      id: makeId("pm"),
+      type: "blueprint",
+      blueprintId: blueprint.id,
+      x: centerX - 150, // Center the blueprint card
+      y: centerY - 100,
+      blueprintData: {
+        name: blueprint.name,
+        description: blueprint.description,
+        inputs: blueprint.inputs,
+        outputs: blueprint.outputs,
+        machines: blueprint.machines,
+        connections: blueprint.connections,
+      }
+    };
+    
+    // Remove connections to/from selected machines
+    state.build.connections = state.build.connections.filter(conn => 
+      !selectedSet.has(conn.fromMachineId) && !selectedSet.has(conn.toMachineId)
+    );
+    
+    // Remove selected machines
+    state.build.placedMachines = state.build.placedMachines.filter(pm => !selectedSet.has(pm.id));
+    
+    // Add blueprint instance
+    state.build.placedMachines.push(blueprintInstance);
+    
+    // Try to reconnect external connections to blueprint ports
+    reconnectExternalConnectionsToBlueprint(externalConnections, blueprintInstance, selectedSet);
+    
+    // Clear selection
+    state.build.selectedMachines = [blueprintInstance.id];
+    
+    saveBuild();
+    renderCanvas(true);
+    updateSelectionClasses();
+  }
+  
+  function reconnectExternalConnectionsToBlueprint(externalConnections, blueprintInstance, originalSelectedSet) {
+    const blueprint = blueprintInstance.blueprintData;
+    
+    externalConnections.forEach(conn => {
+      if (!conn.materialId) return; // Skip if we couldn't determine material
+      
+      if (conn.toInside) {
+        // Connection FROM outside TO inside (blueprint input)
+        const sourceMachine = state.build.placedMachines.find(pm => pm.id === conn.fromMachineId);
+        if (!sourceMachine) return;
+        
+        // Find matching blueprint input port by material ID
+        const inputIndex = blueprint.inputs.findIndex(inp => inp.materialId === conn.materialId);
+        if (inputIndex >= 0) {
+          // Create new connection to blueprint input
+          state.build.connections.push({
+            id: makeId("conn"),
+            fromMachineId: conn.fromMachineId,
+            fromPortIdx: conn.fromPortIdx,
+            toMachineId: blueprintInstance.id,
+            toPortIdx: String(inputIndex),
+          });
+          console.log(`Reconnected input: ${getMaterialById(conn.materialId)?.name} from ${conn.fromMachineId} to blueprint port ${inputIndex}`);
+        }
+      } else if (conn.fromInside) {
+        // Connection FROM inside TO outside (blueprint output)
+        const targetMachine = state.build.placedMachines.find(pm => pm.id === conn.toMachineId);
+        if (!targetMachine) return;
+        
+        // Find matching blueprint output port by material ID (captured before deletion)
+        const outputIndex = blueprint.outputs.findIndex(out => out.materialId === conn.materialId);
+        
+        if (outputIndex >= 0) {
+          // Create new connection from blueprint output
+          state.build.connections.push({
+            id: makeId("conn"),
+            fromMachineId: blueprintInstance.id,
+            fromPortIdx: String(outputIndex),
+            toMachineId: conn.toMachineId,
+            toPortIdx: conn.toPortIdx,
+          });
+          console.log(`Reconnected output: ${getMaterialById(conn.materialId)?.name} from blueprint port ${outputIndex} to ${conn.toMachineId}`);
+        }
+      }
+    });
+  }
+  
+  function deleteBlueprint(blueprintId) {
+    if (!blueprintId) return;
+    
+    const blueprint = state.db.blueprints.find(bp => bp.id === blueprintId);
+    if (!blueprint) return;
+    
+    // Check if blueprint is used in other blueprints (nested)
+    const usedInBlueprints = state.db.blueprints.filter(bp => {
+      if (bp.id === blueprintId) return false; // Don't check self
+      return bp.machines.some(m => m.type === "blueprint" && m.blueprintId === blueprintId);
+    });
+    
+    // Check if blueprint is placed on the canvas
+    const placedInstances = state.build.placedMachines.filter(
+      pm => pm.type === "blueprint" && pm.blueprintId === blueprintId
+    );
+    
+    // Check if blueprint is in the edit stack (currently being edited)
+    const isBeingEdited = state.blueprintEditStack.some(frame => {
+      return frame.placedMachines.some(pm => pm.type === "blueprint" && pm.blueprintId === blueprintId);
+    });
+    
+    // Build error message if in use
+    const errors = [];
+    if (usedInBlueprints.length > 0) {
+      const blueprintNames = usedInBlueprints.map(bp => `"${bp.name}"`).join(", ");
+      errors.push(`Used in ${usedInBlueprints.length} other blueprint${usedInBlueprints.length > 1 ? 's' : ''}: ${blueprintNames}`);
+    }
+    if (placedInstances.length > 0) {
+      errors.push(`${placedInstances.length} instance${placedInstances.length > 1 ? 's' : ''} placed on the canvas`);
+    }
+    if (isBeingEdited) {
+      errors.push(`Currently being edited in a nested blueprint`);
+    }
+    
+    if (errors.length > 0) {
+      alert(`Cannot delete blueprint "${blueprint.name}":\n\n• ${errors.join("\n• ")}\n\nRemove all usages first.`);
+      return;
+    }
+    
+    // Safe to delete
+    if (!confirm(`Delete blueprint "${blueprint.name}"? This action cannot be undone.`)) return;
+    
+    state.db.blueprints = state.db.blueprints.filter(bp => bp.id !== blueprintId);
+    
+    // Invalidate cache
+    invalidateBlueprintCountCache(blueprintId);
+    
+    saveDb();
+    renderBlueprintsList();
+    setStatus(`Blueprint "${blueprint.name}" deleted.`);
+  }
+  
+  /**
+   * Calculate total machine counts for a blueprint (recursively traversing nested blueprints)
+   * Uses caching for performance with large blueprints
+   * @param {string} blueprintId - Blueprint ID
+   * @returns {{ totalCount: number, breakdown: Object }} - Total count and breakdown by machine type
+   */
+  function calculateBlueprintMachineCounts(blueprintId) {
+    // Check cache first
+    if (state.blueprintMachineCountCache[blueprintId]) {
+      return state.blueprintMachineCountCache[blueprintId];
+    }
+    
+    const blueprint = state.db.blueprints.find(bp => bp.id === blueprintId);
+    if (!blueprint) {
+      return { totalCount: 0, breakdown: {} };
+    }
+    
+    let totalCount = 0;
+    const breakdown = {}; // { machineId or "blueprint:blueprintId": count }
+    
+    blueprint.machines.forEach(pm => {
+      const count = pm.count || 1;
+      
+      if (pm.type === "blueprint" && pm.blueprintId) {
+        // Nested blueprint - recursively calculate
+        const nestedCounts = calculateBlueprintMachineCounts(pm.blueprintId);
+        totalCount += nestedCounts.totalCount * count;
+        
+        // Merge nested breakdown into this one
+        for (const key in nestedCounts.breakdown) {
+          breakdown[key] = (breakdown[key] || 0) + (nestedCounts.breakdown[key] * count);
+        }
+      } else {
+        // Regular machine
+        totalCount += count;
+        
+        // Group by machine type
+        let machineKey;
+        if (pm.type === "purchasing_portal") {
+          machineKey = "purchasing_portal";
+        } else if (pm.type === "fuel_source") {
+          machineKey = "fuel_source";
+        } else if (pm.type === "nursery") {
+          machineKey = "nursery";
+        } else if (pm.machineId) {
+          machineKey = pm.machineId;
+        } else {
+          machineKey = "unknown";
+        }
+        
+        breakdown[machineKey] = (breakdown[machineKey] || 0) + count;
+      }
+    });
+    
+    const result = { totalCount, breakdown };
+    state.blueprintMachineCountCache[blueprintId] = result;
+    return result;
+  }
+  
+  /**
+   * Invalidate blueprint machine count cache for a specific blueprint and all blueprints that contain it
+   * @param {string} blueprintId - Blueprint ID to invalidate
+   */
+  function invalidateBlueprintCountCache(blueprintId) {
+    // Clear the cache for this blueprint
+    delete state.blueprintMachineCountCache[blueprintId];
+    
+    // Find and clear cache for any blueprints that contain this one
+    state.db.blueprints.forEach(bp => {
+      if (bp.machines.some(m => m.type === "blueprint" && m.blueprintId === blueprintId)) {
+        invalidateBlueprintCountCache(bp.id); // Recursively invalidate parents
+      }
+    });
+  }
+  
+  function renderBlueprintsList() {
+    const listEl = $("#blueprintsList");
+    if (!listEl) return;
+    
+    if (state.db.blueprints.length === 0) {
+      listEl.innerHTML = '<div class="emptyState">No blueprints yet. Select machines and click 📐 to create one.</div>';
+      return;
+    }
+    
+    listEl.innerHTML = state.db.blueprints.map(bp => {
+      const machineCount = calculateBlueprintMachineCounts(bp.id);
+      
+      // Build inputs HTML
+      const inputsHTML = (bp.inputs || []).map(input => {
+        const material = getMaterialById(input.materialId);
+        const materialName = material ? material.name : "Unknown";
+        return `
+          <div class="blueprintCard__ioItem">
+            <span class="blueprintCard__ioIcon">📥</span>
+            <span>${escapeHtml(materialName)}: ${input.rate.toFixed(1)}/min</span>
+          </div>
+        `;
+      }).join('');
+      
+      // Build outputs HTML
+      const outputsHTML = (bp.outputs || []).map(output => {
+        const material = getMaterialById(output.materialId);
+        const materialName = material ? material.name : "Unknown";
+        return `
+          <div class="blueprintCard__ioItem">
+            <span class="blueprintCard__ioIcon">📤</span>
+            <span>${escapeHtml(materialName)}: ${output.rate.toFixed(1)}/min</span>
+          </div>
+        `;
+      }).join('');
+      
+      // Build machine breakdown HTML
+      const breakdownItems = [];
+      for (const machineKey in machineCount.breakdown) {
+        const count = machineCount.breakdown[machineKey];
+        let machineName = "Unknown";
+        
+        if (machineKey === "purchasing_portal") {
+          machineName = "Purchasing Portal";
+        } else if (machineKey === "fuel_source") {
+          machineName = "Fuel Source";
+        } else if (machineKey === "nursery") {
+          machineName = "Nursery";
+        } else if (machineKey === "unknown") {
+          machineName = "Unknown Machine";
+        } else {
+          const machine = getMachineById(machineKey);
+          machineName = machine ? machine.name : "Unknown Machine";
+        }
+        
+        breakdownItems.push({ name: machineName, count });
+      }
+      
+      // Sort by count descending, then by name
+      breakdownItems.sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        return a.name.localeCompare(b.name);
+      });
+      
+      const breakdownHTML = breakdownItems.map(item => `
+        <div style="display: flex; justify-content: space-between; padding: 3px 0; font-size: 11px;">
+          <span>${escapeHtml(item.name)}</span>
+          <span style="font-weight: 600; color: var(--accent);">×${item.count}</span>
+        </div>
+      `).join('');
+      
+      return `
+        <div class="blueprintCard" data-blueprint-id="${bp.id}" draggable="true">
+          <div class="blueprintCard__header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
+            <div class="blueprintCard__name">${escapeHtml(bp.name)}</div>
+            <button class="btn btn--danger btn--sm" data-action="blueprint:delete" data-blueprint-delete-id="${bp.id}" title="Delete Blueprint" style="padding: 2px 6px; font-size: 11px;">✕</button>
+          </div>
+          ${bp.description ? `<div class="blueprintCard__description">${escapeHtml(bp.description)}</div>` : ''}
+          <div class="blueprintCard__stats">
+            <span>🏭 ${machineCount.totalCount} machine${machineCount.totalCount !== 1 ? 's' : ''}</span>
+          </div>
+          ${breakdownHTML ? `
+            <details class="blueprintCard__breakdown">
+              <summary style="cursor: pointer; font-size: 11px; color: var(--muted); margin-top: 8px; user-select: none;">
+                ▸ Show machine breakdown
+              </summary>
+              <div style="margin-top: 6px; padding: 8px; background: rgba(0,0,0,.2); border-radius: 6px;">
+                ${breakdownHTML}
+              </div>
+            </details>
+          ` : ''}
+          ${inputsHTML || outputsHTML ? `
+            <div class="blueprintCard__io">
+              ${inputsHTML ? `
+                <div class="blueprintCard__ioSection">
+                  <div class="blueprintCard__ioTitle">Inputs</div>
+                  <div class="blueprintCard__ioList">${inputsHTML}</div>
+                </div>
+              ` : ''}
+              ${outputsHTML ? `
+                <div class="blueprintCard__ioSection">
+                  <div class="blueprintCard__ioTitle">Outputs</div>
+                  <div class="blueprintCard__ioList">${outputsHTML}</div>
+                </div>
+              ` : ''}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+    
+    // Add drag handlers
+    listEl.querySelectorAll('.blueprintCard').forEach(card => {
+      card.addEventListener('dragstart', (e) => {
+        // Don't start drag if clicking the delete button
+        if (e.target.closest('[data-action="blueprint:delete"]')) {
+          e.preventDefault();
+          return;
+        }
+        
+        const blueprintId = card.dataset.blueprintId;
+        e.dataTransfer.setData('blueprintId', blueprintId);
+        e.dataTransfer.effectAllowed = 'copy';
+      });
+      
+      // Prevent delete button from triggering drag
+      const deleteBtn = card.querySelector('[data-action="blueprint:delete"]');
+      if (deleteBtn) {
+        deleteBtn.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
+        });
+      }
+    });
+  }
+  
+  function placeBlueprintOnCanvas(blueprintId, x, y) {
+    const blueprint = state.db.blueprints.find(bp => bp.id === blueprintId);
+    if (!blueprint) return;
+    
+    // Create a single "blueprint" machine that acts as a black box
+    const blueprintMachine = {
+      id: makeId("pm"),
+      type: "blueprint",
+      blueprintId: blueprint.id,
+      x,
+      y,
+      // Store blueprint data for rendering
+      blueprintData: {
+        name: blueprint.name,
+        description: blueprint.description,
+        inputs: blueprint.inputs,
+        outputs: blueprint.outputs,
+        machines: blueprint.machines, // For stats calculation
+        connections: blueprint.connections, // For editing
+      }
+    };
+    
+    state.build.placedMachines.push(blueprintMachine);
+    
+    // Select the newly placed blueprint
+    state.build.selectedMachines = [blueprintMachine.id];
+    
+    saveBuild();
+    renderCanvas(true); // Force recreation to show new machine
+    updateSelectionClasses();
+    
+    setStatus(`Blueprint "${blueprint.name}" placed on canvas.`);
+  }
+  
+  function enterBlueprintEditMode(instanceId) {
+    const placedMachine = state.build.placedMachines.find(pm => pm.id === instanceId);
+    if (!placedMachine || placedMachine.type !== "blueprint") return;
+    
+    const blueprint = state.db.blueprints.find(bp => bp.id === placedMachine.blueprintId);
+    if (!blueprint) {
+      setStatus("Blueprint definition not found.", "error");
+      return;
+    }
+    
+    // Push current canvas state to stack (including current edit context if nested)
+    state.blueprintEditStack.push({
+      placedMachines: JSON.parse(JSON.stringify(state.build.placedMachines)),
+      connections: JSON.parse(JSON.stringify(state.build.connections)),
+      camera: { ...state.build.camera },
+      selectedMachines: [...state.build.selectedMachines],
+      editContext: state.currentBlueprintEdit ? JSON.parse(JSON.stringify(state.currentBlueprintEdit)) : null,
+    });
+    
+    // Set edit context
+    state.currentBlueprintEdit = {
+      blueprintId: blueprint.id,
+      instanceId: instanceId,
+      originalBlueprint: JSON.parse(JSON.stringify(blueprint)), // Keep copy for validation
+    };
+    
+    // Load blueprint machines onto canvas with proper IDs
+    // Generate new IDs for the machines when loading them into edit mode
+    const idMap = new Map();
+    const machines = blueprint.machines.map(templateMachine => {
+      const newId = makeId("pm");
+      idMap.set(templateMachine.blueprintMachineId, newId);
+      
+      const machine = JSON.parse(JSON.stringify(templateMachine));
+      machine.id = newId;
+      // Keep the relative positions from blueprint
+      return machine;
+    });
+    
+    // Remap connections to use the new machine IDs and add connection IDs
+    const connections = (blueprint.connections || []).map(templateConn => {
+      return {
+        id: makeId("conn"),
+        fromMachineId: idMap.get(templateConn.fromMachineId),
+        fromPortIdx: templateConn.fromPortIdx,
+        toMachineId: idMap.get(templateConn.toMachineId),
+        toPortIdx: templateConn.toPortIdx,
+      };
+    });
+    
+    state.build.placedMachines = machines;
+    state.build.connections = connections;
+    state.build.selectedMachines = [];
+    state.build.camera = { x: 0, y: 0, zoom: 1.0 };
+    
+    // Update canvas subtitle to show we're editing
+    renderCanvas(true);
+    updateBlueprintEditUI();
+    
+    setStatus(`Editing blueprint: ${blueprint.name}`);
+  }
+  
+  function exitBlueprintEditMode(skipSave = false) {
+    if (state.blueprintEditStack.length === 0) {
+      setStatus("Not currently editing a blueprint.", "warning");
+      return;
+    }
+    
+    if (!skipSave && (state.build.placedMachines.length > 0 || state.build.connections.length > 0)) {
+      if (!confirm("Exit without saving changes?")) {
+        return;
+      }
+    }
+    
+    // Pop canvas state from stack
+    const previousState = state.blueprintEditStack.pop();
+    state.build.placedMachines = previousState.placedMachines;
+    state.build.connections = previousState.connections;
+    state.build.camera = previousState.camera;
+    state.build.selectedMachines = previousState.selectedMachines;
+    
+    // Restore previous edit context (if we're still in nested editing)
+    state.currentBlueprintEdit = previousState.editContext;
+    
+    // Persist the restored state
+    // If we're back to main canvas, this saves it to localStorage
+    // If we're still nested, saveBuild() will save the main canvas from stack bottom
+    saveBuild();
+    
+    renderCanvas(true);
+    updateBlueprintEditUI();
+    setStatus("Exited blueprint edit mode.");
+  }
+  
+  function saveBlueprintEdit() {
+    if (!state.currentBlueprintEdit) {
+      setStatus("Not currently editing a blueprint.", "error");
+      return;
+    }
+    
+    const { blueprintId, instanceId, originalBlueprint } = state.currentBlueprintEdit;
+    const blueprint = state.db.blueprints.find(bp => bp.id === blueprintId);
+    if (!blueprint) {
+      setStatus("Blueprint not found.", "error");
+      return;
+    }
+    
+    // Analyze current canvas to get new inputs/outputs
+    const machineIds = state.build.placedMachines.map(pm => pm.id);
+    const analysis = analyzeBlueprintMachines(machineIds);
+    
+    // Check if inputs/outputs have changed
+    const inputsChanged = !portsMatch(originalBlueprint.inputs, analysis.inputs);
+    const outputsChanged = !portsMatch(originalBlueprint.outputs, analysis.outputs);
+    
+    if (inputsChanged || outputsChanged) {
+      const msg = "Blueprint inputs/outputs have changed. This will disconnect existing connections to this blueprint instance" + 
+        (countBlueprintInstances(blueprintId) > 1 ? " (and potentially other instances)" : "") + 
+        ". Continue?";
+      if (!confirm(msg)) return;
+    }
+    
+    // Update blueprint definition with properly mapped machines and connections
+    // Calculate relative positions from first machine
+    const firstMachine = state.build.placedMachines[0];
+    const originX = firstMachine?.x || 0;
+    const originY = firstMachine?.y || 0;
+    
+    // Create a mapping from current IDs to blueprint template IDs
+    const idToBlueprintId = new Map();
+    
+    const machines = state.build.placedMachines.map((pm, idx) => {
+      // Deep copy machine data
+      const copy = JSON.parse(JSON.stringify(pm));
+      // Store relative position from first machine
+      copy.x = pm.x - originX;
+      copy.y = pm.y - originY;
+      // Use a sequential ID for blueprint template
+      const blueprintId = `bpm_${idx}`;
+      idToBlueprintId.set(pm.id, blueprintId);
+      copy.blueprintMachineId = blueprintId;
+      delete copy.id; // Will be assigned when placed
+      return copy;
+    });
+    
+    // Deep copy connections with mapped IDs
+    const connections = state.build.connections.map(conn => {
+      return {
+        fromMachineId: idToBlueprintId.get(conn.fromMachineId),
+        fromPortIdx: conn.fromPortIdx,
+        toMachineId: idToBlueprintId.get(conn.toMachineId),
+        toPortIdx: conn.toPortIdx,
+      };
+    });
+    
+    blueprint.machines = machines;
+    blueprint.connections = connections;
+    blueprint.inputs = analysis.inputs;
+    blueprint.outputs = analysis.outputs;
+    
+    // Invalidate cache since blueprint was modified
+    invalidateBlueprintCountCache(blueprintId);
+    
+    saveDb();
+    
+    // Update all instances of this blueprint on parent canvas
+    const parentState = state.blueprintEditStack[state.blueprintEditStack.length - 1];
+    if (parentState) {
+      parentState.placedMachines.forEach(pm => {
+        if (pm.type === "blueprint" && pm.blueprintId === blueprintId) {
+          pm.blueprintData = {
+            name: blueprint.name,
+            description: blueprint.description,
+            inputs: blueprint.inputs,
+            outputs: blueprint.outputs,
+            machines: blueprint.machines,
+            connections: blueprint.connections,
+          };
+          
+          // If inputs/outputs changed, remove connections that are now invalid
+          if (inputsChanged || outputsChanged) {
+            removeInvalidConnectionsForBlueprint(parentState.connections, pm.id, blueprint.inputs, blueprint.outputs);
+          }
+        }
+      });
+    }
+    
+    exitBlueprintEditMode(true);
+    saveBuild();
+    setStatus(`Blueprint "${blueprint.name}" updated.`);
+  }
+  
+  function saveBlueprintAsNew() {
+    if (!state.currentBlueprintEdit) {
+      setStatus("Not currently editing a blueprint.", "error");
+      return;
+    }
+    
+    const originalBlueprint = state.db.blueprints.find(bp => bp.id === state.currentBlueprintEdit.blueprintId);
+    if (!originalBlueprint) return;
+    
+    const newName = prompt("Enter name for new blueprint:", originalBlueprint.name + " (Copy)");
+    if (!newName || !newName.trim()) return;
+    
+    // Analyze current canvas
+    const machineIds = state.build.placedMachines.map(pm => pm.id);
+    const analysis = analyzeBlueprintMachines(machineIds);
+    
+    // Calculate relative positions from first machine
+    const firstMachine = state.build.placedMachines[0];
+    const originX = firstMachine?.x || 0;
+    const originY = firstMachine?.y || 0;
+    
+    // Create a mapping from current IDs to blueprint template IDs
+    const idToBlueprintId = new Map();
+    
+    const machines = state.build.placedMachines.map((pm, idx) => {
+      // Deep copy machine data
+      const copy = JSON.parse(JSON.stringify(pm));
+      // Store relative position from first machine
+      copy.x = pm.x - originX;
+      copy.y = pm.y - originY;
+      // Use a sequential ID for blueprint template
+      const blueprintId = `bpm_${idx}`;
+      idToBlueprintId.set(pm.id, blueprintId);
+      copy.blueprintMachineId = blueprintId;
+      delete copy.id; // Will be assigned when placed
+      return copy;
+    });
+    
+    // Deep copy connections with mapped IDs
+    const connections = state.build.connections.map(conn => {
+      return {
+        fromMachineId: idToBlueprintId.get(conn.fromMachineId),
+        fromPortIdx: conn.fromPortIdx,
+        toMachineId: idToBlueprintId.get(conn.toMachineId),
+        toPortIdx: conn.toPortIdx,
+      };
+    });
+    
+    // Create new blueprint
+    const newBlueprint = {
+      id: makeId("bp"),
+      name: newName.trim(),
+      description: originalBlueprint.description,
+      machines,
+      connections,
+      inputs: analysis.inputs,
+      outputs: analysis.outputs,
+    };
+    
+    state.db.blueprints.push(newBlueprint);
+    
+    // Invalidate cache since we added a new blueprint
+    invalidateBlueprintCountCache(newBlueprint.id);
+    
+    saveDb();
+    renderBlueprintsList();
+    
+    // Ask if user wants to update the current instance to use the new blueprint
+    if (confirm(`Update the edited instance to use the new blueprint "${newName}"?`)) {
+      const parentState = state.blueprintEditStack[state.blueprintEditStack.length - 1];
+      if (parentState) {
+        const instance = parentState.placedMachines.find(pm => pm.id === state.currentBlueprintEdit.instanceId);
+        if (instance) {
+          instance.blueprintId = newBlueprint.id;
+          instance.blueprintData = {
+            name: newBlueprint.name,
+            description: newBlueprint.description,
+            inputs: newBlueprint.inputs,
+            outputs: newBlueprint.outputs,
+            machines: newBlueprint.machines,
+            connections: newBlueprint.connections,
+          };
+        }
+      }
+    }
+    
+    exitBlueprintEditMode(true);
+    saveBuild();
+    setStatus(`New blueprint "${newName}" created.`);
+  }
+  
+  function updateBlueprintEditUI() {
+    const subtitle = $("#canvasSubtitle");
+    if (!subtitle) return;
+    
+    if (state.currentBlueprintEdit) {
+      const blueprint = state.db.blueprints.find(bp => bp.id === state.currentBlueprintEdit.blueprintId);
+      const blueprintName = blueprint ? blueprint.name : "Unknown";
+      const depth = state.blueprintEditStack.length;
+      
+      subtitle.innerHTML = `
+        <span style="color: var(--accent); font-weight: bold;">📐 EDITING: ${escapeHtml(blueprintName)}</span>
+        ${depth > 1 ? `<span style="color: var(--muted);"> (Depth: ${depth})</span>` : ""}
+        <button class="btn btn--sm" data-action="blueprint:save-edit" title="Save changes to blueprint">💾 Save</button>
+        <button class="btn btn--sm" data-action="blueprint:save-as-new" title="Save as new blueprint">📋 Save As New</button>
+        <button class="btn btn--sm" data-action="blueprint:exit-edit" title="Exit without saving">❌ Exit</button>
+      `;
+    } else {
+      // Restore normal subtitle
+      const speed = getEffectiveConveyorSpeed();
+      const { x: camX, y: camY, zoom } = state.build.camera;
+      const zoomPercent = Math.round(zoom * 100);
+      subtitle.innerHTML = `Conveyor: ${speed}/min | <span class="canvas__coords" title="Click to jump to coordinates">Position: (${Math.round(camX)}, ${Math.round(camY)})</span> | Zoom: ${zoomPercent}%`;
+    }
+  }
+  
+  function portsMatch(portsA, portsB) {
+    if (portsA.length !== portsB.length) return false;
+    
+    // Create maps of materialId -> rate
+    const mapA = new Map(portsA.map(p => [p.materialId, p.rate]));
+    const mapB = new Map(portsB.map(p => [p.materialId, p.rate]));
+    
+    for (const [matId, rate] of mapA) {
+      if (!mapB.has(matId) || Math.abs(mapB.get(matId) - rate) > 0.01) {
+        return false;
+      }
+    }
+    
+    return true;
+  }
+  
+  function countBlueprintInstances(blueprintId) {
+    return state.build.placedMachines.filter(pm => 
+      pm.type === "blueprint" && pm.blueprintId === blueprintId
+    ).length;
+  }
+  
+  function removeInvalidConnectionsForBlueprint(connections, blueprintInstanceId, newInputs, newOutputs) {
+    // Remove connections to input ports that no longer exist
+    const validInputMaterials = new Set(newInputs.map(inp => inp.materialId));
+    const validOutputMaterials = new Set(newOutputs.map(out => out.materialId));
+    
+    const toRemove = [];
+    
+    connections.forEach((conn, idx) => {
+      // Check connections TO this blueprint (inputs)
+      if (conn.toMachineId === blueprintInstanceId) {
+        const sourceMachine = state.build.placedMachines.find(pm => pm.id === conn.fromMachineId);
+        if (sourceMachine) {
+          const materialId = getMaterialIdFromPort(sourceMachine, conn.fromPortIdx, "output");
+          if (!validInputMaterials.has(materialId)) {
+            toRemove.push(idx);
+          }
+        }
+      }
+      
+      // Check connections FROM this blueprint (outputs)
+      if (conn.fromMachineId === blueprintInstanceId) {
+        const blueprintMachine = state.build.placedMachines.find(pm => pm.id === blueprintInstanceId);
+        if (blueprintMachine) {
+          const materialId = getMaterialIdFromPort(blueprintMachine, conn.fromPortIdx, "output");
+          if (!validOutputMaterials.has(materialId)) {
+            toRemove.push(idx);
+          }
+        }
+      }
+    });
+    
+    // Remove invalid connections (in reverse order to maintain indices)
+    for (let i = toRemove.length - 1; i >= 0; i--) {
+      connections.splice(toRemove[i], 1);
+    }
+  }
   
   function openSkillsDialog() {
     const dialog = $("#skillsDialog");
@@ -5537,11 +8406,15 @@
   function closeDialog() {
     const skillsDialog = $("#skillsDialog");
     const productionDialog = $("#productionDialog");
+    const jumpDialog = $("#jumpToCoordinatesDialog");
     const storageDialog = $("#storageSelectionDialog");
     const manualStorageDialog = $("#manualStorageDialog");
     const topperDialog = $("#addTopperDialog");
+    const blueprintDialog = $("#createBlueprintDialog");
+    const blueprintSelectDialog = $("#blueprintSelectionDialog");
     if (skillsDialog) skillsDialog.classList.add("hidden");
     if (productionDialog) productionDialog.classList.add("hidden");
+    if (jumpDialog) jumpDialog.classList.add("hidden");
     if (storageDialog) {
       storageDialog.classList.add("hidden");
       // Reset title to default
@@ -5550,10 +8423,13 @@
     }
     if (manualStorageDialog) manualStorageDialog.classList.add("hidden");
     if (topperDialog) topperDialog.classList.add("hidden");
+    if (blueprintDialog) blueprintDialog.classList.add("hidden");
+    if (blueprintSelectDialog) blueprintSelectDialog.classList.add("hidden");
     
     // Clear pending state
     state.ui.pendingStorageReplacementId = null;
     state.ui.pendingHeatingDeviceId = null;
+    state.ui.pendingBlueprintCoords = null;
   }
   
   function openStorageSelectionDialog(x, y) {
@@ -5576,6 +8452,53 @@
       if (title) title.textContent = "Select Storage Type";
       dialog.classList.remove("hidden");
     }
+  }
+  
+  function openBlueprintSelectionDialog(x, y) {
+    if (state.db.blueprints.length === 0) {
+      setStatus("No blueprints available. Create a blueprint first.", "error");
+      return;
+    }
+    
+    // Store coordinates for later use
+    state.ui.pendingBlueprintCoords = { x, y };
+    
+    renderBlueprintSelectionList();
+    
+    const dialog = $("#blueprintSelectionDialog");
+    if (dialog) {
+      dialog.classList.remove("hidden");
+      // Focus search input
+      const searchInput = dialog.querySelector("#blueprintSelectionSearch");
+      if (searchInput) {
+        searchInput.value = "";
+        searchInput.focus();
+      }
+    }
+  }
+  
+  function renderBlueprintSelectionList(filter = "") {
+    const listEl = $("#blueprintSelectionList");
+    if (!listEl) return;
+    
+    const filteredBlueprints = state.db.blueprints.filter(bp => 
+      !filter || bp.name.toLowerCase().includes(filter.toLowerCase())
+    );
+    
+    if (filteredBlueprints.length === 0) {
+      listEl.innerHTML = '<div class="emptyState">No blueprints found.</div>';
+      return;
+    }
+    
+    listEl.innerHTML = filteredBlueprints.map(bp => {
+      const machineCount = bp.machines.length;
+      return `
+        <div class="storageTypeItem" data-blueprint-select-id="${bp.id}">
+          <div class="storageTypeItem__name">📐 ${escapeHtml(bp.name)}</div>
+          <div class="storageTypeItem__meta">${machineCount} machine${machineCount !== 1 ? 's' : ''} • ${bp.inputs.length} in / ${bp.outputs.length} out</div>
+        </div>
+      `;
+    }).join('');
   }
   
   function openManualStorageDialog(machineId) {
@@ -5658,7 +8581,7 @@
     });
     
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreation since storage content changed
     closeDialog();
     state.ui.pendingManualStorageMachineId = null;
     setStatus("Material added to storage.");
@@ -5671,7 +8594,7 @@
     placedMachine.manualInventories.splice(idx, 1);
     
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreation since storage content changed
     setStatus("Material removed from storage.");
   }
   
@@ -5828,7 +8751,7 @@
     
     // Save and re-render
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreation since machine content changed
     setStatus("Topper added to heating device.");
   }
   
@@ -5899,7 +8822,7 @@
     });
     
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreation since machine content changed
     setStatus("Topper removed from heating device.");
   }
   
@@ -5967,7 +8890,7 @@
     });
     
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreation since machine content changed
   }
   
   function replaceStorageType(placedMachineId, newMachineId) {
@@ -6020,7 +8943,7 @@
     }
     
     saveBuild();
-    renderCanvas();
+    renderCanvas(true); // Force recreation since storage type changed
     setStatus(`Storage changed to ${newMachine.name}.`);
   }
   
@@ -6136,7 +9059,31 @@
     const buildData = loadBuild();
     state.build.placedMachines = buildData.placedMachines;
     state.build.connections = buildData.connections;
+    state.build.camera = buildData.camera;
     state.skills = loadSkills();
+    
+    // Load UI preferences (sidebar states)
+    const uiPrefs = loadUIPrefs();
+    state.ui.sidebars = uiPrefs.sidebars;
+    
+    // Apply sidebar visibility based on loaded preferences
+    if (state.ui.sidebars.database) {
+      $("#databaseSidebar")?.classList.remove("hidden");
+    } else {
+      $("#databaseSidebar")?.classList.add("hidden");
+    }
+    
+    if (state.ui.sidebars.blueprints) {
+      $("#blueprintsSidebar")?.classList.remove("hidden");
+    } else {
+      $("#blueprintsSidebar")?.classList.add("hidden");
+    }
+    
+    if (state.ui.sidebars.production) {
+      $("#productionSidebar")?.classList.remove("hidden");
+    } else {
+      $("#productionSidebar")?.classList.add("hidden");
+    }
     
     wireMenus();
     wireTabs();
@@ -6147,7 +9094,17 @@
     wireCanvas();
 
     renderAll();
-    renderCanvas();
+    updateLayoutGridColumns(); // Set correct grid columns BEFORE rendering canvas
+    renderCanvas(); // Now render with correct dimensions
+    
+    // Render production summary if sidebar is open
+    if (state.ui.sidebars.production) {
+      renderProductionSummary();
+    }
+    
+    // Ensure camera transform is applied after layout settles
+    setTimeout(() => updateCameraTransform(), 0);
+    
     setStatus("Ready.");
   }
 
