@@ -273,6 +273,11 @@
                 <option value="">(no recipe)</option>
               </select>
             </div>
+            <div class="field">
+              <label>Quantity</label>
+              <input name="topperCount" type="number" min="1" step="1" value="1" required />
+              <div class="hint">Max is limited by remaining heating area capacity.</div>
+            </div>
           </form>
         </div>
         <div class="dialog__footer">
@@ -628,7 +633,11 @@
       </div>
     </div>
 
-    <script src="./app.js"></script>
+    <script src="./app/shared.app.js"></script>
+    <script src="./app/calculator.app.js"></script>
+    <script src="./app/render.app.js"></script>
+    <script src="./app/ui.app.js"></script>
+    <script src="./app/app.js"></script>
   </body>
 </html>
 

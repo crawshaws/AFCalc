@@ -2,6 +2,12 @@
 
 ## Project Overview
 
+
+**IMPORTANT**
+ - This is a static web page with css and js assets. NOT A NodeJS app and has no special requirements to run other than opening the html file
+ - If you wish to run a command, I would like you to tell be PRIOR to running the command why you want to run it and the ask to run the command. Without this, I have no context to know if I should actually allow the running of your commands
+ - If new data structures are created/updated or the application structure changes (namespaces etc), PLEASE ensure the types.app.js file is kept up to date ALWAYS.
+
 **Alchemy Factory Planner** is a standalone, offline web application for planning and optimizing factory layouts in the game "Alchemy Factory." The application allows users to:
 - Define a database of materials, machines, and recipes
 - Design factory layouts on a visual canvas
@@ -328,11 +334,53 @@ netProduction[materialId] = totalOutput[materialId] - totalInput[materialId]
 ### File System
 ```
 /AF/
+├── jsconfig.json        # Editor-only: enables cross-file IntelliSense for JSDoc types
 ├── index.html           # Main HTML structure
-├── app.js              # All application logic
 ├── styles.css          # All styling
+├── app/                 # Layered JS files (classic scripts, file:// safe)
+│   ├── shared.app.js     # Shared helpers/utilities (no DOM writes)
+│   ├── types.app.js      # JSDoc type hub for AF.* (IDE IntelliSense only)
+│   ├── calculator.app.js # Calculation layer (machine tree + derived state)
+│   ├── render.app.js     # Render-only layer (canvas/cards/connections DOM)
+│   ├── ui.app.js         # UI wiring/actions + DOM-only helpers (dialogs, menus, etc.)
+│   └── app.js            # Core/orchestrator (state + persistence + boot)
 └── PROJECT_DOCUMENTATION.md  # This file
 ```
+
+### Layered Architecture
+
+The codebase is split into layers (in `/app`) while remaining compatible with offline `file://` usage (no ES modules, no bundler).
+
+- **Core/orchestrator (`app/app.js`)**: owns `state`, persistence, and bootstrapping. Exposes a global namespace `window.AF`.
+- **Calculator (`app/calculator.app.js`)**: performs all expensive/derived calculations and writes them into `state` (notably `state.calc` and per-machine efficiency fields).
+- **Renderer (`app/render.app.js`)**: reads precomputed values from `state`/`state.calc` and updates the DOM; should not trigger recalculation.
+- **UI (`app/ui.app.js`)**: event wiring and state mutations; DOM-only helpers live here (including the system dialog service).
+
+**Scheduling model:** UI changes call `AF.scheduler.invalidate(...)` which coalesces work and runs in order:
+1. `AF.calculator.recalculateAll()` (if dirty)
+2. `AF.render.*` DOM updates (if dirty)
+
+This ensures redraws don’t accidentally recompute, and enables future background/idle recalculation.
+
+**Port-rate snapshot (enforcing calc-only computations):**
+
+To prevent render/UI from calling calculation helpers directly (e.g. `getPortOutputRate`, `getPortInputDemand`), the calculator populates a precomputed snapshot:
+
+- `state.calc.port.outputRate`: `Map` keyed by `${machineId}::${portIdx}` → max output rate (items/min at 100% operation)
+- `state.calc.port.inputDemand`: `Map` keyed by `${machineId}::${portIdx}` → max input demand (items/min at 100% operation)
+- `state.calc.port.outputMaterial`: `Map` keyed by `${machineId}::${portIdx}` → output material id (or `null`)
+- `state.calc.port.inputMaterial`: `Map` keyed by `${machineId}::${portIdx}` → input material id (or `null`)
+
+Renderer code should read from `state.calc.port.*` (plus machine `efficiency` / connection `actualRate`) and must not invoke calculation helpers.
+
+### System Dialogs (No native browser dialogs)
+
+The UI layer provides a theme-consistent dialog service at `AF.ui.dialog` which replaces native `alert()` / `confirm()` / `prompt()`:
+
+- `AF.ui.dialog.alert(message, opts?)`
+- `AF.ui.dialog.confirm(message, opts?)` → `Promise<boolean>`
+- `AF.ui.dialog.prompt(message, defaultValue?, opts?)` → `Promise<string|null>`
+- `AF.ui.dialog.open(opts)` → dialog builder for custom content/buttons
 
 ### LocalStorage Keys
 
@@ -411,6 +459,28 @@ User-friendly time input supports:
 
 ## Future Considerations
 
+### Critical Architectural Improvements
+
+**1. Blueprint Physical Instance Model** (See `BLUEPRINT_ARCHITECTURE_REDESIGN.md`)
+   - **Problem:** Current blueprints are "black boxes" with pre-calculated rates that require special-casing in all calculations
+   - **Solution:** When placing a blueprint, copy its contents as physical child machines in the instance
+   - **Benefits:**
+     - Calculations traverse naturally through the tree
+     - Efficiency propagates automatically
+     - Direct connection tracking through blueprints
+     - No virtual machine creation needed
+     - Simpler, more maintainable code
+   - **Status:** Designed, ready for implementation
+
+**2. Class-Based UI Architecture** (See `CLASS_BASED_UI_ARCHITECTURE.md`)
+   - **Problem:** Current DOM generation is coarse-grained (whole card recreation on small changes)
+   - **Solution:** Each machine card becomes a class instance that updates specific DOM nodes when properties change
+   - **Benefits:**
+     - 10x faster for incremental updates
+     - Better encapsulation and maintainability
+     - Easier to extend with new machine types
+   - **Status:** Designed, not yet implemented
+
 ### Potential Enhancements
 1. **Furnace System Integration:**
    - Calculate fuel consumption based on heat requirements
@@ -432,10 +502,10 @@ User-friendly time input supports:
    - Connection merging (multiple outputs to one input)
    - Conveyor overflow handling
 
-5. **Templates & Blueprints:**
-   - Save common machine groups
-   - Share factory designs
-   - Pre-built optimal configurations
+5. **Blueprint Features:**
+   - Detached editing (modify instance without affecting source)
+   - Blueprint versioning
+   - Nested blueprint optimization
 
 ---
 
@@ -474,6 +544,41 @@ User-friendly time input supports:
 
 ---
 
-*Document Version: 1.0*  
-*Last Updated: 2026-01-26*  
+## Recent Bug Fixes
+
+### Blueprint Efficiency Calculation and Display (2026-01-28)
+
+**Issue 1: Virtual Sink Connections Not Created for Blueprint Outputs**
+
+When a blueprint had no external output connections, child machines inside the blueprint that produced outputs were not receiving virtual sink connections. This caused:
+- No demand signal from the virtual sink (which has infinite demand)
+- All machines underclocking to near-zero efficiency
+- Blueprint showing 0% or very low efficiency instead of 100%
+
+**Root Cause:** The virtual sink connection logic only checked if a machine had outgoing connections. For child machines inside blueprints, they have internal connections (to other machines in the blueprint), so they appeared to have outputs even when the blueprint's external output port was unconnected.
+
+**Fix:** Added special handling in the virtual sink connection creation (lines 4432-4491). For child machines inside blueprints, the code now checks if they're mapped to a blueprint output port that has no external connections. If so, a virtual sink connection is created for that specific port, providing the 100% demand signal needed.
+
+**Issue 2: Blueprint Efficiency Calculation Including Source Machines**
+
+Blueprint efficiency was calculated as the minimum of ALL child machines, including purchasing portals and other source machines. Source machines naturally scale to downstream demand (e.g., a purchasing portal at 1% efficiency just means it's supplying 1% of max output as needed), so including them in the minimum efficiency calculation was misleading.
+
+**Fix:** Modified `calculateMachineEfficiencies()` (lines 4810-4828) to exclude source machine types (purchasing portals, fuel sources, nurseries, storage) when calculating the blueprint's displayed efficiency. The blueprint efficiency badge now only reflects production machines (machines with recipes), accurately representing the blueprint's bottleneck.
+
+**Issue 3: Blueprint Card Rendering Recalculating Efficiency Incorrectly**
+
+The blueprint card rendering code (lines 5686-5699) was recalculating efficiency from scratch instead of using the pre-calculated value from `calculateMachineEfficiencies()`. This recalculation included ALL child machines (including source machines), which resulted in displaying incorrect efficiency percentages even though the calculation was correct.
+
+**Fix:** Changed the rendering code to use the pre-calculated `placedMachine.efficiency` value directly instead of recalculating it. This ensures the UI always displays the correctly calculated efficiency that excludes source machines.
+
+**Issue 4: Purchasing Portals Showing Meaningless Efficiency Badges**
+
+Purchasing portals (and other source machines) displayed efficiency badges showing how much downstream demand existed. This was confusing because source machine "efficiency" doesn't represent a bottleneck - it just indicates demand levels.
+
+**Fix:** Removed efficiency badges and underclocking warnings from purchasing portal cards (lines 5848-5867). Source machines now never show efficiency indicators, as their scaling behavior is by design, not a performance issue.
+
+---
+
+*Document Version: 1.1*  
+*Last Updated: 2026-01-29*  
 *Project Status: Core features complete, ready for enhancement*

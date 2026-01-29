@@ -413,6 +413,8 @@ body{
   padding: 4px 8px;
   font-size: 12px;
   font-weight: 600;
+  min-width: 28px;
+  min-height: 24px;
 }
 
 .recipeCard{
@@ -531,9 +533,8 @@ body{
   box-shadow: 0 0 0 3px rgba(90,162,255,.12), var(--shadow);
 }
 .buildMachine.has-insufficient-inputs{
-  border-color: #ff6b6b;
-  box-shadow: 0 0 0 2px rgba(255,107,107,.2), var(--shadow);
-  animation: pulse-warning 2s ease-in-out infinite;
+  /* Red border removed - insufficient inputs now shown via warning icon only */
+  /* Underclocking (low efficiency) is NOT an error, it's normal backpressure behavior */
 }
 @keyframes pulse-warning{
   0%, 100%{ box-shadow: 0 0 0 2px rgba(255,107,107,.2), var(--shadow); }
@@ -548,6 +549,18 @@ body{
   border-bottom: 1px solid var(--border);
   cursor: move;
 }
+.buildMachine__confirmDelete{
+  border-color: rgba(69, 212, 131, .45) !important; /* Bright green border matching --ok */
+  background: rgba(69, 212, 131, .14) !important; /* Darker green inner */
+  color: white !important;
+}
+.buildMachine__confirmDelete:hover{
+  background: rgba(69, 212, 131, .20) !important;
+  border-color: rgba(69, 212, 131, .50) !important;
+}
+.buildMachine__confirmDelete.fadeOut{
+  animation: fadeOut 0.2s ease-out forwards;
+}
 .buildMachine__title{
   font-weight: 700;
   font-size: 14px;
@@ -560,6 +573,14 @@ body{
   0%, 100%{ transform: translateX(0); }
   25%{ transform: translateX(-2px); }
   75%{ transform: translateX(2px); }
+}
+@keyframes fadeIn{
+  from{ opacity: 0; transform: translateX(-8px); }
+  to{ opacity: 1; transform: translateX(0); }
+}
+@keyframes fadeOut{
+  from{ opacity: 1; transform: translateX(0); }
+  to{ opacity: 0; transform: translateX(-8px); }
 }
 .buildMachine__countInput{
   width: 50px;
