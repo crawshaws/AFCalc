@@ -4,7 +4,7 @@
     "version": 1,
     "meta": {
       "createdAt": "2026-01-22T23:53:33.733Z",
-      "updatedAt": "2026-01-28T20:00:44.559Z"
+      "updatedAt": "2026-01-28T22:28:03.099Z"
     },
     "materials": [
       {
@@ -509,21 +509,6 @@
         "footprintLength": null
       },
       {
-        "id": "mac_19bea4398f0_96d0c4cd96a038",
-        "name": "Purchasing Portal",
-        "inputs": 1,
-        "outputs": 1,
-        "requiresFurnace": false,
-        "heatConsumptionP": null,
-        "kind": "standard",
-        "baseHeatConsumptionP": 1,
-        "storageSlots": null,
-        "heatingAreaWidth": null,
-        "heatingAreaLength": null,
-        "footprintWidth": null,
-        "footprintLength": null
-      },
-      {
         "id": "mac_19bf98b8ed3_5d99f8c212c238",
         "name": "Furnace",
         "inputs": 1,
@@ -923,7 +908,7 @@
       {
         "id": "rec_19bea435d51_795aacc4799a18",
         "name": "Purchase Wood",
-        "machineId": "mac_19bea4398f0_96d0c4cd96a038",
+        "machineId": "",
         "processingTimeSec": 1,
         "inputs": [
           {
@@ -942,7 +927,7 @@
       {
         "id": "rec_19bea45baef_683ee9a6ad8e2",
         "name": "Purchase Limestone",
-        "machineId": "mac_19bea4398f0_96d0c4cd96a038",
+        "machineId": "",
         "processingTimeSec": 450,
         "inputs": [
           {
@@ -1098,187 +1083,118 @@
   "build": {
     "placedMachines": [
       {
-        "id": "bpi_19c068b8e1d_1b34ea47399bc8",
-        "type": "blueprint_instance",
-        "blueprintId": "bp_19c05f55958_196d0890d4dbc8",
-        "detached": false,
-        "x": -295,
-        "y": -372,
+        "id": "pm_19c0a142e53_7caed5ee9543f",
+        "type": "machine",
+        "machineId": "mac_19bf98b8ed3_5d99f8c212c238",
+        "recipeId": null,
         "count": 1,
-        "efficiency": 1,
-        "childMachines": [
+        "x": -92.5,
+        "y": -504,
+        "toppers": [
           {
-            "type": "purchasing_portal",
-            "machineId": null,
-            "recipeId": null,
-            "count": 1,
-            "materialId": "mat_19be820b99d_053e5c3443235",
-            "x": 0,
-            "y": 0,
-            "efficiency": 0.0016666666666666666,
-            "actualInputRates": {},
-            "actualOutputRates": {},
-            "blueprintMachineId": "bpm_0",
-            "id": "bpi_19c068b8e1d_1b34ea47399bc8__bpm_0",
-            "_parentBlueprintId": "bpi_19c068b8e1d_1b34ea47399bc8",
-            "_isChildMachine": true
+            "machineId": "mac_19be8331193_f48f5d5c24a51",
+            "recipeId": "rec_19be84c4901_2bd0e82522ed5"
           },
           {
-            "type": "machine",
-            "machineId": "mac_19be82240fe_a2ed8c7eb2ebb",
-            "recipeId": "rec_19be8486b23_e014045a9c80e8",
-            "count": 1,
-            "x": 447.00000000000006,
-            "y": -283,
-            "efficiency": 1,
-            "actualInputRates": {},
-            "actualOutputRates": {},
-            "storageSlots": null,
-            "inventories": [],
-            "manualInventories": [],
-            "toppers": [],
-            "previewFuelId": null,
-            "blueprintMachineId": "bpm_1",
-            "id": "bpi_19c068b8e1d_1b34ea47399bc8__bpm_1",
-            "_parentBlueprintId": "bpi_19c068b8e1d_1b34ea47399bc8",
-            "_isChildMachine": true
+            "machineId": "mac_19be8331193_f48f5d5c24a51",
+            "recipeId": "rec_19be84c4901_2bd0e82522ed5"
           },
           {
-            "type": "machine",
-            "machineId": "mac_19be8238f43_5615225db5c7b8",
-            "recipeId": "rec_19be855cf03_1b466cf5600ec8",
-            "count": 3,
-            "x": 843,
-            "y": 78,
-            "efficiency": 1,
-            "actualInputRates": {},
-            "actualOutputRates": {},
-            "storageSlots": null,
-            "inventories": [],
-            "manualInventories": [],
-            "toppers": [],
-            "previewFuelId": null,
-            "blueprintMachineId": "bpm_2",
-            "id": "bpi_19c068b8e1d_1b34ea47399bc8__bpm_2",
-            "_parentBlueprintId": "bpi_19c068b8e1d_1b34ea47399bc8",
-            "_isChildMachine": true
+            "machineId": "mac_19be8331193_f48f5d5c24a51",
+            "recipeId": "rec_19be84c4901_2bd0e82522ed5"
           }
         ],
-        "childConnections": [
-          {
-            "id": "bpi_19c068b8e1d_1b34ea47399bc8__conn_19c068b8e1d_f0bb4251670ba8",
-            "fromMachineId": "bpi_19c068b8e1d_1b34ea47399bc8__bpm_0",
-            "toMachineId": "bpi_19c068b8e1d_1b34ea47399bc8__bpm_1",
-            "fromPortIdx": "0",
-            "toPortIdx": "0",
-            "_parentBlueprintId": "bpi_19c068b8e1d_1b34ea47399bc8",
-            "actualRate": 0.15,
-            "lastCalculated": 1769636335135
-          },
-          {
-            "id": "bpi_19c068b8e1d_1b34ea47399bc8__conn_19c068b8e1d_8e4718924e76b8",
-            "fromMachineId": "bpi_19c068b8e1d_1b34ea47399bc8__bpm_1",
-            "toMachineId": "bpi_19c068b8e1d_1b34ea47399bc8__bpm_2",
-            "fromPortIdx": "0",
-            "toPortIdx": "0",
-            "_parentBlueprintId": "bpi_19c068b8e1d_1b34ea47399bc8",
-            "actualRate": 30,
-            "lastCalculated": 1769636335135
-          }
-        ],
-        "portMappings": {
-          "inputs": [],
-          "outputs": [
-            {
-              "portIdx": 0,
-              "materialId": "mat_19be854f5d8_feaee1cb69d218",
-              "internalMachineId": "bpi_19c068b8e1d_1b34ea47399bc8__bpm_2",
-              "internalPortIdx": 0
-            }
-          ]
-        },
-        "name": "Large Gears",
-        "description": "",
-        "blueprintData": {
-          "name": "Large Gears",
-          "description": "",
-          "inputs": [],
-          "outputs": [
-            {
-              "materialId": "mat_19be854f5d8_feaee1cb69d218",
-              "rate": 30
-            }
-          ],
-          "machines": [
-            {
-              "type": "purchasing_portal",
-              "machineId": null,
-              "recipeId": null,
-              "count": 1,
-              "materialId": "mat_19be820b99d_053e5c3443235",
-              "x": 0,
-              "y": 0,
-              "efficiency": 0.0016666666666666666,
-              "actualInputRates": {},
-              "actualOutputRates": {},
-              "blueprintMachineId": "bpm_0"
-            },
-            {
-              "type": "machine",
-              "machineId": "mac_19be82240fe_a2ed8c7eb2ebb",
-              "recipeId": "rec_19be8486b23_e014045a9c80e8",
-              "count": 1,
-              "x": 447.00000000000006,
-              "y": -283,
-              "efficiency": 1,
-              "actualInputRates": {},
-              "actualOutputRates": {},
-              "storageSlots": null,
-              "inventories": [],
-              "manualInventories": [],
-              "toppers": [],
-              "previewFuelId": null,
-              "blueprintMachineId": "bpm_1"
-            },
-            {
-              "type": "machine",
-              "machineId": "mac_19be8238f43_5615225db5c7b8",
-              "recipeId": "rec_19be855cf03_1b466cf5600ec8",
-              "count": 3,
-              "x": 843,
-              "y": 78,
-              "efficiency": 1,
-              "actualInputRates": {},
-              "actualOutputRates": {},
-              "storageSlots": null,
-              "inventories": [],
-              "manualInventories": [],
-              "toppers": [],
-              "previewFuelId": null,
-              "blueprintMachineId": "bpm_2"
-            }
-          ],
-          "connections": [
-            {
-              "fromMachineId": "bpm_0",
-              "fromPortIdx": "0",
-              "toMachineId": "bpm_1",
-              "toPortIdx": "0"
-            },
-            {
-              "fromMachineId": "bpm_1",
-              "fromPortIdx": "0",
-              "toMachineId": "bpm_2",
-              "toPortIdx": "0"
-            }
-          ]
-        }
+        "previewFuelId": "mat_19be821c709_aecec32eef4d8",
+        "efficiency": 0.30092592592592593,
+        "actualInputRates": {},
+        "actualOutputRates": {},
+        "hasInsufficientInputs": false,
+        "storageSlots": null,
+        "inventories": [],
+        "manualInventories": []
+      },
+      {
+        "id": "pm_19c0a2a4b11_7c1c1491aaf31",
+        "type": "purchasing_portal",
+        "machineId": null,
+        "recipeId": null,
+        "count": 1,
+        "materialId": "mat_19be820b99d_053e5c3443235",
+        "x": -1169,
+        "y": -390,
+        "efficiency": 0.0007523148148148148,
+        "actualInputRates": {},
+        "actualOutputRates": {},
+        "hasInsufficientInputs": false
+      },
+      {
+        "id": "pm_19c0a2a6b27_9133ebdb61ffd8",
+        "type": "machine",
+        "machineId": "mac_19be82240fe_a2ed8c7eb2ebb",
+        "recipeId": "rec_19be8486b23_e014045a9c80e8",
+        "count": 2,
+        "x": -684,
+        "y": -421,
+        "efficiency": 0.22569444444444445,
+        "actualInputRates": {},
+        "actualOutputRates": {},
+        "hasInsufficientInputs": false
+      },
+      {
+        "id": "pm_19c0a2ac2ad_54844b022d60d",
+        "type": "machine",
+        "machineId": "mac_19be8238f43_5615225db5c7b8",
+        "recipeId": "rec_19be877a9d3_e79989d4b08b68",
+        "count": 3,
+        "x": 445,
+        "y": 103,
+        "efficiency": 0.30092592592592593,
+        "actualInputRates": {},
+        "actualOutputRates": {},
+        "hasInsufficientInputs": false
       }
     ],
-    "connections": [],
+    "connections": [
+      {
+        "id": "conn_19c0a2a8666_ccb2af30b9d4d",
+        "fromMachineId": "pm_19c0a2a4b11_7c1c1491aaf31",
+        "fromPortIdx": "0",
+        "toMachineId": "pm_19c0a2a6b27_9133ebdb61ffd8",
+        "toPortIdx": "0",
+        "actualRate": 0.06770833333333333,
+        "lastCalculated": 1769697133868
+      },
+      {
+        "id": "conn_19c0a2aa34a_a3a442ef8b3c48",
+        "fromMachineId": "pm_19c0a2a6b27_9133ebdb61ffd8",
+        "fromPortIdx": "0",
+        "toMachineId": "pm_19c0a142e53_7caed5ee9543f",
+        "toPortIdx": "grouped-input-mat_19be82124b0_0ac30d451be348",
+        "actualRate": 13.541666666666666,
+        "lastCalculated": 1769697133868
+      },
+      {
+        "id": "conn_19c0a2b1e0d_d1802048bfe0d",
+        "fromMachineId": "pm_19c0a142e53_7caed5ee9543f",
+        "fromPortIdx": "grouped-output-mat_19be8217b17_337a74790e45e8",
+        "toMachineId": "pm_19c0a2ac2ad_54844b022d60d",
+        "toPortIdx": "0",
+        "actualRate": 13.541666666666666,
+        "lastCalculated": 1769697133868
+      },
+      {
+        "id": "conn_19c0a2b4529_13a7e928a6eb08",
+        "fromMachineId": "pm_19c0a2ac2ad_54844b022d60d",
+        "fromPortIdx": "0",
+        "toMachineId": "pm_19c0a142e53_7caed5ee9543f",
+        "toPortIdx": "fuel",
+        "actualRate": 4.075038580246914,
+        "lastCalculated": 1769697133868
+      }
+    ],
     "camera": {
-      "x": 80,
-      "y": -54,
+      "x": -19,
+      "y": -72,
       "zoom": 1
     }
   },

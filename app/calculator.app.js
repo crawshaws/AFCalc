@@ -540,25 +540,29 @@
           const inputs = [];
           const outputs = [];
           
-          // Add fuel as input (if connected)
+          // Add fuel as input (connection OR preview fuel)
           const fuelDemand = getPortInputDemand(pm, "fuel");
           if (fuelDemand > 0) {
-            // Get fuel material from connection
+            // Prefer real connection material, else preview fuel
             const fuelConn = AF.state.build.connections.find(
               conn => conn.toMachineId === pm.id && conn.toPortIdx === "fuel"
             );
+            let fuelMaterialId = null;
             if (fuelConn) {
               const sourceMachine = AF.state.build.placedMachines.find(m => m.id === fuelConn.fromMachineId);
               if (sourceMachine) {
-                const fuelMaterialId = AF.core.getMaterialIdFromPort(sourceMachine, fuelConn.fromPortIdx, "output");
-                if (fuelMaterialId) {
-                  inputs.push({
-                    portIdx: "fuel",
-                    materialId: fuelMaterialId,
-                    rate: fuelDemand * efficiency
-                  });
-                }
+                fuelMaterialId = AF.core.getMaterialIdFromPort(sourceMachine, fuelConn.fromPortIdx, "output");
               }
+            } else {
+              fuelMaterialId = pm.previewFuelId || null;
+            }
+
+            if (fuelMaterialId) {
+              inputs.push({
+                portIdx: "fuel",
+                materialId: fuelMaterialId,
+                rate: fuelDemand * efficiency
+              });
             }
           }
           
@@ -1437,29 +1441,62 @@
       const hasRealOutputs = outputConnections.has(pm.id);
       if (!hasRealOutputs) {
         // Skip machines that don't actually produce anything (e.g., fuel sources without toppers)
-        const canProduce = pm.type === "purchasing_portal" || pm.type === "nursery" || 
+        const canProduce = pm.type === "purchasing_portal" || pm.type === "nursery" ||
                           (pm.type === "machine" && pm.recipeId) ||
                           (pm.type === "machine" && pm.toppers && pm.toppers.length > 0);
-        
+
         if (canProduce) {
-          const virtualConn = {
-            id: `virtual_sink_conn_${pm.id}`,
-            fromMachineId: pm.id,
-            toMachineId: VIRTUAL_SINK_ID,
-            fromPortIdx: 0,
-            toPortIdx: 0,
-            _isVirtualSinkConnection: true
-          };
-          
-          if (!outputConnections.has(pm.id)) {
-            outputConnections.set(pm.id, []);
+          const machine = pm.machineId ? AF.core.getMachineById(pm.machineId) : null;
+
+          // Heating devices don't have numeric output ports; they use grouped output ports by material.
+          // If we attach a virtual sink to port "0", demand won't register and efficiency becomes 0.
+          if (machine && machine.kind === "heating_device") {
+            const outputMaterialIds = new Set();
+            (pm.toppers || []).forEach(t => {
+              if (!t.recipeId) return;
+              const r = AF.core.getRecipeById(t.recipeId);
+              if (!r) return;
+              (r.outputs || []).forEach(out => {
+                if (out && out.materialId) outputMaterialIds.add(out.materialId);
+              });
+            });
+
+            outputMaterialIds.forEach(materialId => {
+              const virtualConn = {
+                id: `virtual_sink_conn_${pm.id}_${materialId}`,
+                fromMachineId: pm.id,
+                toMachineId: VIRTUAL_SINK_ID,
+                fromPortIdx: `grouped-output-${materialId}`,
+                toPortIdx: 0,
+                _isVirtualSinkConnection: true
+              };
+
+              if (!outputConnections.has(pm.id)) outputConnections.set(pm.id, []);
+              outputConnections.get(pm.id).push(virtualConn);
+
+              if (!inputConnections.has(VIRTUAL_SINK_ID)) inputConnections.set(VIRTUAL_SINK_ID, []);
+              inputConnections.get(VIRTUAL_SINK_ID).push(virtualConn);
+            });
+          } else {
+            const virtualConn = {
+              id: `virtual_sink_conn_${pm.id}`,
+              fromMachineId: pm.id,
+              toMachineId: VIRTUAL_SINK_ID,
+              fromPortIdx: 0,
+              toPortIdx: 0,
+              _isVirtualSinkConnection: true
+            };
+
+            if (!outputConnections.has(pm.id)) {
+              outputConnections.set(pm.id, []);
+            }
+            outputConnections.get(pm.id).push(virtualConn);
+
+            if (!inputConnections.has(VIRTUAL_SINK_ID)) {
+              inputConnections.set(VIRTUAL_SINK_ID, []);
+            }
+            inputConnections.get(VIRTUAL_SINK_ID).push(virtualConn);
           }
-          outputConnections.get(pm.id).push(virtualConn);
-          
-          if (!inputConnections.has(VIRTUAL_SINK_ID)) {
-            inputConnections.set(VIRTUAL_SINK_ID, []);
-          }
-          inputConnections.get(VIRTUAL_SINK_ID).push(virtualConn);
         }
       }
       
@@ -2547,22 +2584,27 @@
       const count = placedMachine.count || 1;
       totalHeatP *= count;
 
-      // Get the fuel material from the incoming connection
+      // Prefer incoming fuel connection (actual fuel)
       const fuelConnection = AF.state.build.connections.find(
         conn => conn.toMachineId === placedMachine.id && conn.toPortIdx === "fuel"
       );
 
+      /** @type {string|null} */
+      let fuelMaterialId = null;
       if (fuelConnection) {
         const sourceMachine = AF.state.build.placedMachines.find(pm => pm.id === fuelConnection.fromMachineId);
         if (sourceMachine) {
-          const fuelMaterialId = AF.core.getMaterialIdFromPort(sourceMachine, fuelConnection.fromPortIdx, "output");
-          const fuelMaterial = fuelMaterialId ? AF.core.getMaterialById(fuelMaterialId) : null;
-
-          if (fuelMaterial && fuelMaterial.fuelValue) {
-            const adjustedFuelValue = getFuelHeatValue(fuelMaterial.fuelValue);
-            return (60 * totalHeatP) / adjustedFuelValue;
-          }
+          fuelMaterialId = AF.core.getMaterialIdFromPort(sourceMachine, fuelConnection.fromPortIdx, "output");
         }
+      } else {
+        // Preview fuel mode (no connection) should still count as an import requirement
+        fuelMaterialId = placedMachine.previewFuelId || null;
+      }
+
+      const fuelMaterial = fuelMaterialId ? AF.core.getMaterialById(fuelMaterialId) : null;
+      if (fuelMaterial && fuelMaterial.fuelValue) {
+        const adjustedFuelValue = getFuelHeatValue(fuelMaterial.fuelValue);
+        if (adjustedFuelValue > 0) return (60 * totalHeatP) / adjustedFuelValue;
       }
 
       return 0;
