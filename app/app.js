@@ -322,6 +322,8 @@
       state.ui.selected.machines = null;
       AF.scheduler.invalidate({ needsRecalc: true, needsRender: true, forceRecreate: true });
       AF.ui.setStatus("Imported full state with validation.", "ok");
+
+      return validateBuild(placedMachines, connections);
     } else {
       // Legacy database-only import
       state.db = normalizeDb(parsed);
@@ -330,9 +332,9 @@
       state.ui.selected.machines = null;
       AF.scheduler.invalidate({ needsRecalc: true, needsRender: true, forceRecreate: true });
       AF.ui.setStatus("Imported database JSON.", "ok");
-    }
 
-    return validateBuild(placedMachines, connections);
+      return validateBuild([], []);
+    }
   }
 
   /**
