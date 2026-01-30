@@ -26,8 +26,10 @@
     /** @type {HTMLInputElement|null} */
     let inputEl = null;
 
-    /** @type {{ resolve: ((v: any) => void), cancelButtonId?: string, defaultButtonId?: string, closeOnOverlay?: boolean, closeOnEsc?: boolean } | null} */
+    /** @type {{ resolve: ((v: any) => void), cancelButtonId?: string, defaultButtonId?: string, closeOnOverlay?: boolean, closeOnEsc?: boolean, enterAction?: ("default"|"none") } | null} */
     let active = null;
+    /** @type {string|null} */
+    let activeDialogClass = null;
     /** @type {((e: KeyboardEvent) => void) | null} */
     let activeKeyHandler = null;
 
@@ -102,7 +104,11 @@
       active = null;
       cleanupKeyHandler();
 
-      if (dialogEl) dialogEl.classList.add("hidden");
+      if (dialogEl) {
+        dialogEl.classList.add("hidden");
+        if (activeDialogClass) dialogEl.classList.remove(activeDialogClass);
+      }
+      activeDialogClass = null;
 
       resolve({
         id: buttonId,
@@ -122,6 +128,8 @@
      *   cancelButtonId?: string,
      *   closeOnOverlay?: boolean,
      *   closeOnEsc?: boolean,
+     *   enterAction?: ("default"|"none"),
+     *   dialogClass?: string,
      * }} opts
      */
     function open(opts = {}) {
@@ -129,6 +137,16 @@
 
       // If something is already open, close it as "cancel" before replacing.
       if (active) closeWithButtonId(active.cancelButtonId ?? "cancel");
+
+      // Apply optional dialog root class (used for styling variants)
+      if (dialogEl) {
+        if (activeDialogClass) dialogEl.classList.remove(activeDialogClass);
+        activeDialogClass = null;
+        if (opts.dialogClass) {
+          activeDialogClass = String(opts.dialogClass);
+          dialogEl.classList.add(activeDialogClass);
+        }
+      }
 
       const title = String(opts.title ?? "Notice");
       const buttons = Array.isArray(opts.buttons) && opts.buttons.length > 0
@@ -178,6 +196,7 @@
           defaultButtonId: opts.defaultButtonId,
           closeOnOverlay: opts.closeOnOverlay !== false,
           closeOnEsc: opts.closeOnEsc !== false,
+          enterAction: opts.enterAction === "none" ? "none" : "default",
         };
       });
 
@@ -209,6 +228,7 @@
         if (e.key === "Enter") {
           const tag = (document.activeElement?.tagName || "").toLowerCase();
           if (tag === "textarea") return;
+          if (tag === "input" && active?.enterAction === "none") return;
           if (defaultBtn) {
             e.preventDefault();
             defaultBtn.click();
@@ -297,6 +317,284 @@
 
   AF.ui.dialog = dialog;
 
+  // ---------- Quick Calculator (Satisfactory-style "quick input") ----------
+  const quickCalc = (() => {
+    let isOpen = false;
+
+    function isTypingTarget(el) {
+      if (!el) return false;
+      const tag = String(el.tagName || "").toUpperCase();
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      // contenteditable / rich inputs
+      return !!el.isContentEditable;
+    }
+
+    /**
+     * Safe arithmetic evaluator (no eval).
+     * Supports: + - * / ^, parentheses, unary -, decimals.
+     * @param {string} expr
+     * @returns {number}
+     */
+    function evalExpression(expr) {
+      const s = String(expr ?? "").trim();
+      if (!s) throw new Error("Enter an expression.");
+
+      /** @type {Array<{ kind: "num", value: number } | { kind: "op", value: string } | { kind: "lp" } | { kind: "rp" }>} */
+      const tokens = [];
+
+      // Tokenize
+      for (let i = 0; i < s.length; ) {
+        const ch = s[i];
+        if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+          i++;
+          continue;
+        }
+        if (ch === "(") {
+          tokens.push({ kind: "lp" });
+          i++;
+          continue;
+        }
+        if (ch === ")") {
+          tokens.push({ kind: "rp" });
+          i++;
+          continue;
+        }
+
+        // Operators (accept × and ÷ for convenience)
+        if (["+","-","*","/","^","×","÷"].includes(ch)) {
+          const op = ch === "×" ? "*" : ch === "÷" ? "/" : ch;
+          tokens.push({ kind: "op", value: op });
+          i++;
+          continue;
+        }
+
+        // Number
+        if ((ch >= "0" && ch <= "9") || ch === ".") {
+          let j = i + 1;
+          while (j < s.length) {
+            const c = s[j];
+            if ((c >= "0" && c <= "9") || c === ".") j++;
+            else break;
+          }
+          const raw = s.slice(i, j);
+          const n = Number(raw);
+          if (!Number.isFinite(n)) throw new Error(`Invalid number: ${raw}`);
+          tokens.push({ kind: "num", value: n });
+          i = j;
+          continue;
+        }
+
+        throw new Error(`Unexpected character: ${ch}`);
+      }
+
+      const prec = (op) => {
+        if (op === "u-") return 5;
+        if (op === "^") return 4;
+        if (op === "*" || op === "/") return 3;
+        if (op === "+" || op === "-") return 2;
+        return 0;
+      };
+      const rightAssoc = (op) => op === "^" || op === "u-";
+
+      // Shunting-yard to RPN
+      /** @type {Array<{ kind: "num", value: number } | { kind: "op", value: string }>} */
+      const output = [];
+      /** @type {Array<{ kind: "op", value: string } | { kind: "lp" }>} */
+      const stack = [];
+
+      /** @type {"start"|"num"|"op"|"lp"|"rp"} */
+      let prev = "start";
+
+      for (const t of tokens) {
+        if (t.kind === "num") {
+          output.push(t);
+          prev = "num";
+          continue;
+        }
+        if (t.kind === "lp") {
+          stack.push(t);
+          prev = "lp";
+          continue;
+        }
+        if (t.kind === "rp") {
+          while (stack.length && stack[stack.length - 1].kind !== "lp") {
+            /** @type {any} */ (output).push(stack.pop());
+          }
+          if (!stack.length || stack[stack.length - 1].kind !== "lp") throw new Error("Mismatched parentheses.");
+          stack.pop(); // pop lp
+          prev = "rp";
+          continue;
+        }
+        if (t.kind === "op") {
+          let op = t.value;
+          if (op === "-" && (prev === "start" || prev === "op" || prev === "lp")) op = "u-";
+          if (op !== "u-" && (prev === "start" || prev === "op" || prev === "lp")) {
+            throw new Error("Operator position is invalid.");
+          }
+          while (stack.length) {
+            const top = stack[stack.length - 1];
+            if (top.kind === "lp") break;
+            const topOp = top.value;
+            if (prec(topOp) > prec(op) || (prec(topOp) === prec(op) && !rightAssoc(op))) {
+              /** @type {any} */ (output).push(stack.pop());
+              continue;
+            }
+            break;
+          }
+          stack.push({ kind: "op", value: op });
+          prev = "op";
+          continue;
+        }
+      }
+
+      while (stack.length) {
+        const t = stack.pop();
+        if (t.kind === "lp") throw new Error("Mismatched parentheses.");
+        /** @type {any} */ (output).push(t);
+      }
+
+      // Evaluate RPN
+      /** @type {number[]} */
+      const st = [];
+      for (const t of output) {
+        if (t.kind === "num") {
+          st.push(t.value);
+          continue;
+        }
+        if (t.kind === "op") {
+          if (t.value === "u-") {
+            if (st.length < 1) throw new Error("Invalid expression.");
+            st.push(-st.pop());
+            continue;
+          }
+          if (st.length < 2) throw new Error("Invalid expression.");
+          const b = st.pop();
+          const a = st.pop();
+          let r = 0;
+          if (t.value === "+") r = a + b;
+          else if (t.value === "-") r = a - b;
+          else if (t.value === "*") r = a * b;
+          else if (t.value === "/") r = a / b;
+          else if (t.value === "^") r = Math.pow(a, b);
+          else throw new Error("Unknown operator.");
+          st.push(r);
+          continue;
+        }
+      }
+      if (st.length !== 1) throw new Error("Invalid expression.");
+      const out = st[0];
+      if (!Number.isFinite(out)) throw new Error("Result is not a finite number.");
+      return out;
+    }
+
+    /** @param {number} n */
+    function formatResult(n) {
+      // Keep it readable and stable (avoid floating-point spew)
+      const rounded = Math.round(n * 1e12) / 1e12;
+      if (Object.is(rounded, -0)) return "0";
+      if (Number.isInteger(rounded)) return String(rounded);
+      // Trim trailing zeros
+      return String(rounded).replace(/(\.\d*?[1-9])0+$/,"$1").replace(/\.0+$/,"");
+    }
+
+    /**
+     * Open the quick calculator dialog.
+     * @param {string=} initial
+     */
+    function open(initial = "") {
+      if (isOpen) {
+        AF.ui.dialog.close();
+        return;
+      }
+
+      isOpen = true;
+
+      const wrap = document.createElement("div");
+      wrap.className = "quickCalc";
+
+      const hint = document.createElement("div");
+      hint.className = "quickCalc__hint";
+      hint.textContent = "Enter to calculate • Esc to close";
+
+      const field = document.createElement("div");
+      field.className = "field";
+
+      const input = document.createElement("input");
+      input.className = "input quickCalc__input";
+      input.type = "text";
+      input.placeholder = "e.g. (2+3)*4";
+      input.value = String(initial ?? "");
+
+      const result = document.createElement("div");
+      result.className = "quickCalc__result";
+
+      field.appendChild(input);
+      wrap.appendChild(hint);
+      wrap.appendChild(field);
+      wrap.appendChild(result);
+
+      input.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        const expr = input.value;
+        try {
+          const val = evalExpression(expr);
+          const text = formatResult(val);
+          input.value = text;
+          input.select();
+          result.textContent = text;
+          result.classList.remove("is-error");
+        } catch (err) {
+          const msg = (err && err.message) ? String(err.message) : "Invalid expression.";
+          result.textContent = msg;
+          result.classList.add("is-error");
+        }
+      });
+
+      // Open dialog (Enter is reserved for our input handler)
+      void AF.ui.dialog
+        .open({
+          title: "Quick Calculator",
+          contentEl: wrap,
+          buttons: [{ id: "close", label: "Close", kind: "default" }],
+          defaultButtonId: "close",
+          cancelButtonId: "close",
+          closeOnOverlay: true,
+          closeOnEsc: true,
+          enterAction: "none",
+          dialogClass: "dialog--quickCalc",
+        })
+        .finally(() => {
+          isOpen = false;
+        });
+
+      // Focus the input (dialog's built-in focus targets its own managed input, not ours)
+      setTimeout(() => {
+        input.focus();
+        input.select();
+      }, 0);
+    }
+
+    function handleGlobalKeydown(e) {
+      if (e.defaultPrevented) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (isTypingTarget(e.target)) return;
+
+      if (e.key === "o" || e.key === "O") {
+        e.preventDefault();
+        open("");
+      }
+    }
+
+    function wireGlobalHotkey() {
+      document.addEventListener("keydown", handleGlobalKeydown, true);
+    }
+
+    return { open, wireGlobalHotkey };
+  })();
+
+  AF.ui.quickCalc = quickCalc;
+
 
   // Export UI init for app.js orchestrator
   function init() {
@@ -304,6 +602,7 @@
     wireTabs();
     wireWorkspaceTabs();
     wireSearch();
+    quickCalc.wireGlobalHotkey();
     wireAddButtons();
     wireListsAndForms();
     wireImportInput();
@@ -3354,7 +3653,7 @@
 
     function walk(machines, dx, dy) {
       (machines || []).forEach(m => {
-        if (!m || m.type === "export") return;
+        if (!m) return;
 
         const x = (Number(m.x) || 0) + dx;
         const y = (Number(m.y) || 0) + dy;
@@ -3389,7 +3688,7 @@
     /** @type {Map<string, string>} */
     const idRemap = new Map(); // old -> new (only for machines kept at this level)
 
-    /** @type {Map<string, { inputs: Map<number, { machineId: string, portIdx: number }>, outputs: Map<number, { machineId: string, portIdx: number }> }>} */
+    /** @type {Map<string, { inputs: Map<string, { machineId: string, portIdx: (string|number) }>, outputs: Map<string, { machineId: string, portIdx: (string|number) }> }>} */
     const containerEndpoints = new Map();
 
     /** @type {Map<string, string>} */
@@ -3407,7 +3706,7 @@
 
     // 1) Process machines: keep non-container machines, expand containers recursively.
     (machines || []).forEach(m => {
-      if (!m || m.type === "export") return;
+      if (!m) return;
 
       const mx = offsetX + (Number(m.x) || 0);
       const my = offsetY + (Number(m.y) || 0);
@@ -3422,24 +3721,24 @@
 
         const inputs = Array.isArray(m.portMappings?.inputs) ? m.portMappings.inputs : [];
         inputs.forEach((mp, idx) => {
-          const portIdx = Number(mp?.portIdx ?? idx);
+          const portKey = String(mp?.portIdx ?? idx);
           const internalOldId = mp?.internalMachineId;
-          const internalPortIdx = Number(mp?.internalPortIdx ?? 0);
+          const internalPortIdx = (mp?.internalPortIdx ?? 0);
           if (!internalOldId) return;
           const internalNewId = child.oldToNew.get(internalOldId);
           if (!internalNewId) return;
-          endpoints.inputs.set(portIdx, { machineId: internalNewId, portIdx: internalPortIdx });
+          endpoints.inputs.set(portKey, { machineId: internalNewId, portIdx: internalPortIdx });
         });
 
         const outputs = Array.isArray(m.portMappings?.outputs) ? m.portMappings.outputs : [];
         outputs.forEach((mp, idx) => {
-          const portIdx = Number(mp?.portIdx ?? idx);
+          const portKey = String(mp?.portIdx ?? idx);
           const internalOldId = mp?.internalMachineId;
-          const internalPortIdx = Number(mp?.internalPortIdx ?? 0);
+          const internalPortIdx = (mp?.internalPortIdx ?? 0);
           if (!internalOldId) return;
           const internalNewId = child.oldToNew.get(internalOldId);
           if (!internalNewId) return;
-          endpoints.outputs.set(portIdx, { machineId: internalNewId, portIdx: internalPortIdx });
+          endpoints.outputs.set(portKey, { machineId: internalNewId, portIdx: internalPortIdx });
         });
 
         containerEndpoints.set(m.id, endpoints);
@@ -3462,16 +3761,16 @@
     });
 
     function resolveEndpoint(machineId, portIdx, kind) {
-      const idx = Number(portIdx);
+      const key = String(portIdx);
       if (containerEndpoints.has(machineId)) {
         const ep = kind === "input"
-          ? containerEndpoints.get(machineId).inputs.get(idx)
-          : containerEndpoints.get(machineId).outputs.get(idx);
+          ? containerEndpoints.get(machineId).inputs.get(key)
+          : containerEndpoints.get(machineId).outputs.get(key);
         return ep ? { machineId: ep.machineId, portIdx: ep.portIdx } : null;
       }
       const newId = idRemap.get(machineId);
       if (!newId) return null;
-      return { machineId: newId, portIdx: idx };
+      return { machineId: newId, portIdx: portIdx };
     }
 
     // 2) Process connections at this level (child connections were already merged above)

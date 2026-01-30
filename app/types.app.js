@@ -80,7 +80,9 @@
  */
 
 /**
- * @typedef {{ fromMachineId: string, fromPortIdx: number, toMachineId: string, toPortIdx: number }} BlueprintConnection
+ * Note: port indices are usually numeric, but some special ports use string keys
+ * (e.g. grouped outputs like `grouped-output-<materialId>`).
+ * @typedef {{ fromMachineId: string, fromPortIdx: (number|string), toMachineId: string, toPortIdx: (number|string) }} BlueprintConnection
  */
 
 /**
@@ -135,8 +137,8 @@
 /**
  * @typedef {{
  *   // Port index -> mapping
- *   inputs: (Array<{ materialId: (string|null), internalMachineId: string, internalPortIdx: (string|number), kind?: ("material"|"fuel") }> | undefined),
- *   outputs: (Array<{ materialId: (string|null), internalMachineId: string, internalPortIdx: (string|number), kind?: ("material"|"fuel") }> | undefined),
+ *   inputs: (Array<{ portIdx?: (string|number), materialId: (string|null), internalMachineId: string, internalPortIdx: (string|number), kind?: ("material"|"fuel") }> | undefined),
+ *   outputs: (Array<{ portIdx?: (string|number), materialId: (string|null), internalMachineId: string, internalPortIdx: (string|number), kind?: ("material"|"fuel") }> | undefined),
  * }} BlueprintPortMappings
  */
 
@@ -198,9 +200,9 @@
  * @typedef {{
  *   id: (string|undefined),
  *   fromMachineId: string,
- *   fromPortIdx: number,
+ *   fromPortIdx: (number|string),
  *   toMachineId: string,
- *   toPortIdx: number,
+ *   toPortIdx: (number|string),
  *   actualRate: (number|undefined),
  *   _parentBlueprintId: (string|undefined),
  *   materialId: (string|undefined),
@@ -504,6 +506,8 @@
  *     cancelButtonId?: string,
  *     closeOnOverlay?: boolean,
  *     closeOnEsc?: boolean,
+ *     enterAction?: ("default"|"none"),
+ *     dialogClass?: string,
  *   }) => Promise<{ id: string, value: any }>,
  *   alert: (message: string, opts?: { title?: string, okText?: string }) => Promise<void>,
  *   confirm: (message: string, opts?: { title?: string, okText?: string, cancelText?: string, danger?: boolean }) => Promise<boolean>,
@@ -514,8 +518,16 @@
 
 /**
  * @typedef {{
+ *   open: (initial?: string) => void,
+ *   wireGlobalHotkey: () => void,
+ * }} AFUIQuickCalc
+ */
+
+/**
+ * @typedef {{
  *   init: () => void,
  *   dialog: AFUIDialog,
+ *   quickCalc: AFUIQuickCalc,
  *   setStatus: (text: string, kind?: "info"|"error"|"warn"|"success") => void,
  *   updateSelectionClasses: () => void,
  *   renderAllUIElements: () => void,

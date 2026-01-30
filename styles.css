@@ -850,6 +850,12 @@ body{
   background: rgba(0,0,0,.7);
   backdrop-filter: blur(4px);
 }
+
+/* Quick calculator overlay: less blur so the canvas stays readable */
+.dialog.dialog--quickCalc .dialog__overlay{
+  background: rgba(0,0,0,.55);
+  backdrop-filter: blur(1px);
+}
 .dialog__content{
   position: relative;
   width: min(500px, 90%);
@@ -884,6 +890,26 @@ body{
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.quickCalc{
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.quickCalc__hint{
+  font-size: 12px;
+  color: var(--muted);
+}
+.quickCalc__result{
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--muted);
+  min-height: 16px;
+  user-select: text;
+}
+.quickCalc__result.is-error{
+  color: var(--danger);
 }
 
 .skillsList{
