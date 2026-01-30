@@ -1139,6 +1139,8 @@
       const machine = AF.core.getMachineById(pm.machineId);
       inventories.forEach(inv => {
         if (inv.netRate > 0.01 && inv.timeToFillMinutes !== null && isFinite(inv.timeToFillMinutes)) {
+          const totalCostPerMinute = Number(AF.state.calc.totalCost) || 0;
+          const fillCostCopper = totalCostPerMinute > 0 ? (totalCostPerMinute * inv.timeToFillMinutes) : 0;
           storageFillItems.push({
             storageId: pm.id,
             storageName: machine ? machine.name : "Storage",
@@ -1147,6 +1149,7 @@
             netRate: inv.netRate,
             inputRate: inv.inputRate,
             timeToFillMinutes: inv.timeToFillMinutes,
+            fillCostCopper,
           });
         }
       });

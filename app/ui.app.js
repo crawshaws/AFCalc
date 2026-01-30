@@ -4440,9 +4440,12 @@
 
       storageFillItems.forEach(item => {
         const timeStr = formatTimeMinutes(item.timeToFillMinutes);
+        const fillCost = Number(item.fillCostCopper) || 0;
+        const costStr = fillCost > 0 ? formatCoins(fillCost) : null;
         html += `<div class="productionItem">
           <strong>${escapeHtml(item.storageName)}</strong> - ${escapeHtml(item.materialName)}: 
-          <span style="color: var(--ok);">Fills in ${timeStr}</span> 
+          <span style="color: var(--ok);">Fills in ${timeStr}</span>
+          ${costStr ? `<span style="color: var(--danger); margin-left: 8px;">Costs ${escapeHtml(costStr)} to fill</span>` : ``}
           <span style="color: var(--muted); font-size: 10px;">@ ${item.inputRate.toFixed(2)}/min</span>
         </div>`;
       });

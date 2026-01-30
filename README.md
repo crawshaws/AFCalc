@@ -41,6 +41,11 @@ Each material represents an in-game resource with the following properties:
 - Handles circular dependencies with detection and informative messages
 - Uses memoization for performance optimization
 
+**Storage Fill Cost (Production Summary):**
+- Storage fill items show an estimated **total cost to fill**, computed as:
+  - `current total cost per minute × time to fill`
+- This is a build-level estimate and is most accurate when the build’s primary cost driver is the material accumulating in storage.
+
 ### Machines
 Each machine represents a production unit:
 
