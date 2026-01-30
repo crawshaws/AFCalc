@@ -562,6 +562,17 @@
         return;
       }
 
+      // Preferred recipe selection (click-to-select)
+      const preferredRecipeItem = e.target.closest?.("[data-preferred-recipe-id]");
+      if (preferredRecipeItem) {
+        const rid = preferredRecipeItem.dataset.preferredRecipeId;
+        if (rid && AF.state.ui.pendingPreferredRecipe) {
+          AF.state.ui.pendingPreferredRecipe.selectedRecipeId = rid;
+          renderPreferredRecipeList();
+        }
+        return;
+      }
+
       // Handle blueprint selection
       const blueprintSelectItem = e.target.closest?.("[data-blueprint-select-id]");
       if (blueprintSelectItem) {
@@ -897,6 +908,12 @@
         return;
       case "material:add-recipe":
         addRecipeForMaterial();
+        return;
+      case "material:choose-preferred-recipe":
+        await choosePreferredRecipeForMaterial(data.materialId);
+        return;
+      case "preferred-recipe:confirm":
+        confirmPreferredRecipeDialogSelection();
         return;
       case "machine:delete":
         await deleteSelected("machines");
@@ -2599,6 +2616,107 @@
     }, 50);
   }
 
+  async function choosePreferredRecipeForMaterial(materialId) {
+    if (!materialId) return;
+    const material = AF.core.getMaterialById(materialId);
+    if (!material) return;
+
+    const producing = AF.state.db.recipes.filter(r =>
+      r && (r.outputs || []).some(o => o && o.materialId === materialId)
+    );
+    if (producing.length <= 1) return;
+
+    openPreferredRecipeDialog(materialId);
+  }
+
+  function openPreferredRecipeDialog(materialId) {
+    const material = materialId ? AF.core.getMaterialById(materialId) : null;
+    if (!material) return;
+
+    const producing = AF.state.db.recipes.filter(r =>
+      r && (r.outputs || []).some(o => o && o.materialId === materialId)
+    );
+    if (producing.length <= 1) return;
+
+    // Default selection: currently preferred, else first.
+    const preferred = producing.find(r => !!r.preferredForCost) || producing[0];
+    AF.state.ui.pendingPreferredRecipe = {
+      materialId,
+      selectedRecipeId: preferred?.id || null,
+    };
+
+    renderPreferredRecipeList();
+
+    const dialog = $("#preferredRecipeDialog");
+    if (dialog) {
+      const title = dialog.querySelector(".dialog__title");
+      if (title) title.textContent = `Preferred recipe for ${material.name}`;
+      dialog.classList.remove("hidden");
+    }
+  }
+
+  function renderPreferredRecipeList() {
+    const dialog = $("#preferredRecipeDialog");
+    const listEl = $("#preferredRecipeList");
+    if (!dialog || !listEl) return;
+
+    const pending = AF.state.ui.pendingPreferredRecipe;
+    const materialId = pending?.materialId || null;
+    if (!materialId) {
+      listEl.innerHTML = `<div class="emptyState">No material selected.</div>`;
+      return;
+    }
+
+    const producing = AF.state.db.recipes.filter(r =>
+      r && (r.outputs || []).some(o => o && o.materialId === materialId)
+    );
+    if (producing.length === 0) {
+      listEl.innerHTML = `<div class="emptyState">No recipes found.</div>`;
+      return;
+    }
+
+    const selectedId = pending?.selectedRecipeId || null;
+    listEl.innerHTML = producing.map(r => {
+      const isSel = r.id === selectedId;
+      const machine = r.machineId ? AF.core.getMachineById(r.machineId) : null;
+      const machineName = machine ? machine.name : "(no machine)";
+      const time = formatTimeString(r.processingTimeSec);
+      return `
+        <div class="storageTypeItem${isSel ? " is-selected" : ""}" data-preferred-recipe-id="${escapeHtml(r.id)}" role="button" tabindex="0">
+          <div class="storageTypeItem__name">${escapeHtml(r.name)}</div>
+          <div class="storageTypeItem__meta">${escapeHtml(`${machineName} • ${time}`)}</div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  function confirmPreferredRecipeDialogSelection() {
+    const pending = AF.state.ui.pendingPreferredRecipe;
+    const materialId = pending?.materialId || null;
+    const recipeId = pending?.selectedRecipeId || null;
+    if (!materialId || !recipeId) {
+      closeDialog();
+      return;
+    }
+
+    const producing = AF.state.db.recipes.filter(r =>
+      r && (r.outputs || []).some(o => o && o.materialId === materialId)
+    );
+    if (producing.length === 0) {
+      closeDialog();
+      return;
+    }
+
+    const chosen = producing.find(r => r.id === recipeId) || producing[0];
+    producing.forEach(r => { r.preferredForCost = false; });
+    chosen.preferredForCost = true;
+
+    AF.core?.saveDb?.();
+    closeDialog();
+    renderMaterials();
+    setStatus(`Preferred recipe set: "${chosen.name}".`, "ok");
+  }
+
   async function deleteRecipe(recipeId) {
     if (!recipeId) return;
     const ok = await AF.ui.dialog.confirm("Delete this recipe?", { title: "Delete recipe", danger: true });
@@ -2761,6 +2879,7 @@
     const inputs = readIoFromForm(fd, "inputs");
     const outputs = readIoFromForm(fd, "outputs");
     const heatConsumptionP = toNumberOrNull(fd.get("heatConsumptionP"));
+    const preferredForCost = fd.get("preferredForCost") === "on";
 
     const machine = AF.core.getMachineById(machineId);
     if (!machine) return setStatus("Selected machine does not exist.", "error");
@@ -2782,6 +2901,18 @@
     r.inputs = usedInputs; // Only save inputs with materials selected
     r.outputs = outputs;
     r.heatConsumptionP = heatConsumptionP;
+    r.preferredForCost = preferredForCost;
+
+    // Enforce preferred uniqueness per produced material
+    if (preferredForCost) {
+      const producedMaterialIds = new Set((outputs || []).map(o => o && o.materialId).filter(Boolean));
+      AF.state.db.recipes.forEach(other => {
+        if (!other || other.id === r.id) return;
+        if (!other.preferredForCost) return;
+        const otherProducesAny = (other.outputs || []).some(o => o && producedMaterialIds.has(o.materialId));
+        if (otherProducesAny) other.preferredForCost = false;
+      });
+    }
 
     AF.core?.saveDb?.();
     renderMaterials(); // Re-render materials to show updated recipe
@@ -3718,12 +3849,12 @@
         const selected = AF.state.ui.selected.materials === m.id ? " is-selected" : "";
         const metaParts = [];
 
-        // Calculate realized cost
-        const realizedCost = AF.calculator.calculateRealizedCost(m.id);
-        if (Number.isFinite(realizedCost)) {
-          metaParts.push(`Cost: ${realizedCost.toFixed(2)}`);
+        // Estimated realised cost (blueprint-based)
+        const unitCost = AF.calculator.calculateEstimatedUnitCost(m.id);
+        if (Number.isFinite(unitCost)) {
+          metaParts.push(`Est cost: ${unitCost.toFixed(2)}`);
         } else {
-          metaParts.push(`Cost: —`);
+          metaParts.push(`Est cost: —`);
         }
 
         if (m.buyPrice != null) metaParts.push(`Buy: ${m.buyPrice}`);
@@ -3745,9 +3876,9 @@
     const selected = selectedId ? AF.core.getMaterialById(selectedId) : null;
     if (selected) {
       const metaParts = [];
-      const realizedCost = AF.calculator.calculateRealizedCost(selected.id);
-      if (Number.isFinite(realizedCost)) metaParts.push(`Cost: ${realizedCost.toFixed(2)}`);
-      else metaParts.push(`Cost: —`);
+      const unitCost = AF.calculator.calculateEstimatedUnitCost(selected.id);
+      if (Number.isFinite(unitCost)) metaParts.push(`Est cost: ${unitCost.toFixed(2)}`);
+      else metaParts.push(`Est cost: —`);
       if (selected.buyPrice != null) metaParts.push(`Buy: ${selected.buyPrice}`);
       if (selected.salePrice != null) metaParts.push(`Sell: ${selected.salePrice}`);
       if (selected.isFuel) metaParts.push(`Fuel (${selected.fuelValue ?? "?"}P)`);
@@ -3797,33 +3928,26 @@
     if (fertilizerFields) fertilizerFields.style.display = m.isFertilizer ? "" : "none";
     if (plantField) plantField.style.display = m.isPlant ? "" : "none";
 
-    // Calculate and display realized cost
-    const realizedCost = AF.calculator.calculateRealizedCost(m.id);
+    // Calculate and display estimated realised cost
+    const estimatedCost = AF.calculator.calculateEstimatedUnitCost(m.id);
     const costEl = form.querySelector('[data-bind="realizedCost"]');
     if (costEl) {
-      if (Number.isFinite(realizedCost)) {
-        costEl.textContent = `${realizedCost.toFixed(4)} copper coins`;
+      if (Number.isFinite(estimatedCost)) {
+        costEl.textContent = `${estimatedCost.toFixed(4)} copper coins`;
       } else {
-        // Show detailed breakdown of why cost can't be calculated
-        const details = AF.calculator.getCostCalculationDetails(m.id);
-        let message = "Cannot calculate cost";
-        if (details.reason) {
-          message += `: ${details.reason}`;
+        let msg = "Cannot estimate cost.";
+        if (m.buyPrice == null) {
+          const producing = AF.state.db.recipes.filter(r => (r.outputs || []).some(o => o && o.materialId === m.id));
+          const preferred = producing.filter(r => !!r.preferredForCost);
+          if (producing.length === 0) {
+            msg += "\n\nNo recipe produces this material.";
+          } else if (producing.length > 1 && preferred.length === 0) {
+            msg += "\n\nMultiple recipes produce this material. Mark one recipe as \"Preferred for cost\".";
+          } else if (!AF.state.settings?.costBlueprints?.fuel?.blueprintId) {
+            msg += "\n\nFuel cost blueprint is not configured (File → Cost Settings…).";
+          }
         }
-        if (details.producingRecipes.length > 0) {
-          message += "\n\nRecipe issues:";
-          details.producingRecipes.forEach(r => {
-            message += `\n• ${r.recipeName}: ${r.reason || "OK"}`;
-            if (r.inputs.length > 0) {
-              r.inputs.forEach(inp => {
-                if (!inp.canCalculate) {
-                  message += `\n  - ${inp.materialName} (${inp.items}x): No cost available`;
-                }
-              });
-            }
-          });
-        }
-        costEl.textContent = message;
+        costEl.textContent = msg;
         costEl.style.whiteSpace = "pre-wrap";
       }
     }
@@ -3838,9 +3962,19 @@
       if (producingRecipes.length === 0) {
         recipesList.innerHTML = `<div class="emptyState" style="margin-top: 0;">No recipes produce this material yet.</div>`;
       } else {
-        recipesList.innerHTML = producingRecipes
-          .map(recipe => renderRecipeCard(recipe, m.id))
-          .join("");
+        const preferredCount = producingRecipes.filter(r => !!r.preferredForCost).length;
+        const needsPreferred = producingRecipes.length > 1 && preferredCount === 0 && m.buyPrice == null;
+        const banner = needsPreferred
+          ? `<div class="hint" style="margin: 0 0 10px 0; padding: 10px; border: 1px solid rgba(255,255,255,.08); border-radius: 6px;">
+               Multiple recipes produce <strong>${escapeHtml(m.name)}</strong>. Choose a <strong>Preferred for cost</strong> recipe.
+               <button class="btn btn--sm" type="button" style="margin-left: 8px;" data-action="material:choose-preferred-recipe" data-material-id="${escapeHtml(m.id)}">Choose…</button>
+             </div>`
+          : "";
+        recipesList.innerHTML =
+          banner +
+          producingRecipes
+            .map(recipe => renderRecipeCard(recipe, m.id))
+            .join("");
       }
     }
 
@@ -3858,12 +3992,16 @@
     const machine = recipe.machineId ? AF.core.getMachineById(recipe.machineId) : null;
     const machineName = machine ? machine.name : "(no machine)";
     const time = formatTimeString(recipe.processingTimeSec);
+    const costForContext = contextMaterialId
+      ? AF.calculator.calculateEstimatedRecipeOutputUnitCostById(recipe.id, contextMaterialId)
+      : Infinity;
+    const costStr = Number.isFinite(costForContext) ? `${costForContext.toFixed(2)}c` : "—";
 
     card.dataset.recipeId = recipe.id;
     card.dataset.contextMaterialId = contextMaterialId;
 
-    card.querySelector('[data-bind="recipeName"]').textContent = recipe.name;
-    card.querySelector('[data-bind="recipeMeta"]').textContent = `${machineName} • ${recipe.inputs.length} in • ${recipe.outputs.length} out • ${time}`;
+    card.querySelector('[data-bind="recipeName"]').textContent = recipe.preferredForCost ? `★ ${recipe.name}` : recipe.name;
+    card.querySelector('[data-bind="recipeMeta"]').textContent = `${machineName} • ${recipe.inputs.length} in • ${recipe.outputs.length} out • ${time} • Est cost: ${costStr}`;
 
     // Populate the recipe form body
     const body = card.querySelector('[data-recipe-body]');
@@ -4029,6 +4167,7 @@
     form.querySelector('[data-bind="name"]').setAttribute("value", r.name);
     form.querySelector('[data-bind="processingTimeSec"]').setAttribute("value", formatTimeString(r.processingTimeSec));
     form.querySelector('[data-bind="heatConsumptionP"]').setAttribute("value", r.heatConsumptionP ?? "");
+    if (r.preferredForCost) form.querySelector('[data-bind="preferredForCost"]')?.setAttribute("checked", "");
 
     // Populate machine options
     const machineSelect = form.querySelector('[data-bind="machineId"]');
@@ -4651,6 +4790,7 @@
     const blueprintDialog = $("#createBlueprintDialog");
     const blueprintSelectDialog = $("#blueprintSelectionDialog");
     const costSettingsDialog = $("#costSettingsDialog");
+    const preferredRecipeDialog = $("#preferredRecipeDialog");
     if (skillsDialog) skillsDialog.classList.add("hidden");
     if (productionDialog) productionDialog.classList.add("hidden");
     if (jumpDialog) jumpDialog.classList.add("hidden");
@@ -4665,11 +4805,13 @@
     if (blueprintDialog) blueprintDialog.classList.add("hidden");
     if (blueprintSelectDialog) blueprintSelectDialog.classList.add("hidden");
     if (costSettingsDialog) costSettingsDialog.classList.add("hidden");
+    if (preferredRecipeDialog) preferredRecipeDialog.classList.add("hidden");
 
     // Clear pending state
     AF.state.ui.pendingStorageReplacementId = null;
     AF.state.ui.pendingHeatingDeviceId = null;
     AF.state.ui.pendingBlueprintCoords = null;
+    AF.state.ui.pendingPreferredRecipe = null;
   }
 
 

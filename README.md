@@ -33,13 +33,12 @@ Each material represents an in-game resource with the following properties:
 }
 ```
 
-**Realized Cost Calculation:**
-- The "realized cost" is the minimum of:
-  - The material's `buyPrice` (if available)
-  - The production cost from any recipe that produces it
-- For recipes with multiple inputs, sum all input costs before dividing by output quantity
-- Handles circular dependencies with detection and informative messages
-- Uses memoization for performance optimization
+**Estimated Realised Cost (blueprint-based):**
+- The database UI shows an **estimated unit cost** for each material based on your **recipe chains**.
+- **Base inputs**: materials with a `buyPrice` are treated as the “root” costs (everything ultimately reduces to buy-priced materials).
+- **Recipe choice**: if multiple recipes can produce the same material, the estimator uses the recipe marked **Preferred for cost**.
+- **Fuel/heat costing**: if a recipe consumes heat, the estimator prices the required fuel using the user-selected **Fuel cost blueprint** (see `File → Cost Settings…`) by running that blueprint under the required demand and deriving a unit fuel cost.
+- Uses cycle detection + memoization to avoid infinite recursion and keep the UI fast.
 
 **Storage Fill Cost (Production Summary):**
 - Storage fill items show an estimated **total cost to fill**, computed as:

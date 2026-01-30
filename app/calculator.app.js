@@ -15,6 +15,15 @@
   function init() {
     // Ensure caches exist
     if (!AF.state.blueprintMachineCountCache) AF.state.blueprintMachineCountCache = {};
+    if (!AF.state.estimatedCostCache) {
+      AF.state.estimatedCostCache = {
+        signature: null,
+        // materialId -> unit cost (copper per item)
+        materialUnitCost: new Map(),
+        // `${blueprintId}|${outputMaterialId}|${roundedRate}|${signature}` -> { unitCost, totalCostPerMinute, outputRate }
+        blueprintUnitCostByDemand: new Map(),
+      };
+    }
   }
 
   // Calculator-owned connection rate accessor.
@@ -26,6 +35,379 @@
    */
   function getConnectionRate(connection) {
     return connection && typeof connection.actualRate === "number" ? connection.actualRate : 0;
+  }
+
+  function getEstimatedCostSignature() {
+    const dbMeta = AF.state.db?.meta || {};
+    const skills = AF.state.skills || {};
+    const settings = AF.state.settings || {};
+    const costBlueprints = settings.costBlueprints || {};
+    const fuel = costBlueprints.fuel || {};
+    const fert = costBlueprints.fertilizer || {};
+    return [
+      String(dbMeta.updatedAt || ""),
+      String(skills.machineEfficiency || 0),
+      String(skills.fuelEfficiency || 0),
+      String(skills.fertilizerEfficiency || 0),
+      String(fuel.blueprintId || ""),
+      String(fuel.outputMaterialId || ""),
+      String(fert.blueprintId || ""),
+      String(fert.outputMaterialId || ""),
+    ].join("|");
+  }
+
+  function resetEstimatedCostCacheIfNeeded() {
+    init();
+    const sig = getEstimatedCostSignature();
+    const cache = AF.state.estimatedCostCache;
+    if (cache.signature !== sig) {
+      cache.signature = sig;
+      cache.materialUnitCost = new Map();
+      cache.blueprintUnitCostByDemand = new Map();
+    }
+  }
+
+  function roundDemandRate(rate) {
+    // Keep cache size bounded; blueprint costs are piecewise-constant due to discrete machine counts.
+    return Math.round((Number(rate) || 0) * 100) / 100; // 0.01/min resolution
+  }
+
+  /**
+   * Evaluate a cost blueprint at a demanded output rate, returning its unit cost.
+   * This temporarily swaps `AF.state.build` to an isolated build containing only the blueprint instance
+   * and finite-demand sinks on each blueprint output port.
+   *
+   * @param {string} blueprintId
+   * @param {string} outputMaterialId
+   * @param {number} demandedRatePerMin
+   * @returns {{ unitCost: number, totalCostPerMinute: number, outputRate: number }}
+   */
+  function evaluateCostBlueprintAtDemand(blueprintId, outputMaterialId, demandedRatePerMin) {
+    resetEstimatedCostCacheIfNeeded();
+    const cache = AF.state.estimatedCostCache;
+
+    const sig = cache.signature || "";
+    const rounded = roundDemandRate(demandedRatePerMin);
+    const key = `${blueprintId}|${outputMaterialId}|${rounded}|${sig}`;
+    if (cache.blueprintUnitCostByDemand.has(key)) return cache.blueprintUnitCostByDemand.get(key);
+
+    const blueprint = (AF.state.db.blueprints || []).find(bp => bp.id === blueprintId) || null;
+    if (!blueprint) {
+      const out = { unitCost: Infinity, totalCostPerMinute: Infinity, outputRate: 0 };
+      cache.blueprintUnitCostByDemand.set(key, out);
+      return out;
+    }
+
+    // Build a physical blueprint instance (similar to placeBlueprintOnCanvas) but isolated.
+    const instanceId = `__cost_bpi__${blueprintId}`;
+    const childIdMap = new Map(); // template blueprintMachineId -> child machine id
+    const childMachines = (blueprint.machines || []).map(templateMachine => {
+      const childId = `${instanceId}__${templateMachine.blueprintMachineId}`;
+      childIdMap.set(templateMachine.blueprintMachineId, childId);
+      return {
+        ...JSON.parse(JSON.stringify(templateMachine)),
+        id: childId,
+        _parentBlueprintId: instanceId,
+        _isChildMachine: true,
+        efficiency: 1.0,
+      };
+    });
+
+    const childConnections = (blueprint.connections || []).map(templateConn => ({
+      id: `${instanceId}__cost_conn_${templateConn.fromMachineId}_${templateConn.toMachineId}_${String(templateConn.fromPortIdx)}_${String(templateConn.toPortIdx)}`,
+      fromMachineId: childIdMap.get(templateConn.fromMachineId),
+      toMachineId: childIdMap.get(templateConn.toMachineId),
+      fromPortIdx: templateConn.fromPortIdx,
+      toPortIdx: templateConn.toPortIdx,
+      _parentBlueprintId: instanceId,
+    }));
+
+    // Minimal output port mappings (needed for resolveConnection on external connections).
+    const exportTemplateIds = new Set(
+      (blueprint.machines || [])
+        .filter(m => m && m.type === "export")
+        .map(m => m.blueprintMachineId)
+        .filter(Boolean)
+    );
+
+    function getBlueprintMachineOutputMaterialId(machineTemplate, fromPortIdx) {
+      if (!machineTemplate) return null;
+      if (machineTemplate.type === "purchasing_portal") return machineTemplate.materialId || null;
+      if (machineTemplate.type === "nursery") return machineTemplate.plantId || null;
+      if (machineTemplate.type === "machine" && machineTemplate.machineId) {
+        const def = AF.core.getMachineById(machineTemplate.machineId);
+        if (def && def.kind === "heating_device" && typeof fromPortIdx === "string") {
+          if (String(fromPortIdx).startsWith("grouped-output-")) {
+            return String(fromPortIdx).replace("grouped-output-", "") || null;
+          }
+        }
+      }
+      if (machineTemplate.type === "machine" && machineTemplate.recipeId) {
+        const recipe = AF.core.getRecipeById(machineTemplate.recipeId);
+        const idx = Number(fromPortIdx);
+        const out = recipe?.outputs?.[idx] || null;
+        return out?.materialId || null;
+      }
+      return null;
+    }
+
+    function getBlueprintMachineOutputPortIdxForMaterial(machineTemplate, materialId) {
+      if (!machineTemplate) return 0;
+      if (machineTemplate.type === "purchasing_portal") return 0;
+      if (machineTemplate.type === "nursery") return 0;
+      if (machineTemplate.type === "machine" && machineTemplate.machineId) {
+        const def = AF.core.getMachineById(machineTemplate.machineId);
+        if (def && def.kind === "heating_device") {
+          return `grouped-output-${materialId}`;
+        }
+      }
+      if (machineTemplate.type === "machine" && machineTemplate.recipeId) {
+        const recipe = AF.core.getRecipeById(machineTemplate.recipeId);
+        const idx = (recipe?.outputs || []).findIndex(o => o && o.materialId === materialId);
+        return idx >= 0 ? idx : 0;
+      }
+      return 0;
+    }
+
+    const outputMappings = [];
+    (blueprint.outputs || []).forEach((out, portIdx) => {
+      const materialId = out?.materialId || null;
+      if (!materialId) return;
+
+      const exportingMachines = [];
+      const noConsumerMachines = [];
+
+      (blueprint.machines || []).forEach(machineTemplate => {
+        if (!machineTemplate || !machineTemplate.blueprintMachineId) return;
+
+        // Produces this material?
+        const produces = (() => {
+          if (machineTemplate.type === "purchasing_portal") return machineTemplate.materialId === materialId;
+          if (machineTemplate.type === "nursery") return machineTemplate.plantId === materialId;
+          if (machineTemplate.type === "machine" && machineTemplate.recipeId) {
+            const r = AF.core.getRecipeById(machineTemplate.recipeId);
+            return !!(r && (r.outputs || []).some(o => o && o.materialId === materialId));
+          }
+          if (machineTemplate.type === "machine" && machineTemplate.machineId) {
+            const def = AF.core.getMachineById(machineTemplate.machineId);
+            if (def && def.kind === "heating_device") {
+              // Any topper output matches?
+              return !!(machineTemplate.toppers || []).some(t => {
+                const r = t?.recipeId ? AF.core.getRecipeById(t.recipeId) : null;
+                return !!r && (r.outputs || []).some(o => o && o.materialId === materialId);
+              });
+            }
+          }
+          return false;
+        })();
+        if (!produces) return;
+
+        const outgoingForMaterial = (blueprint.connections || []).filter(conn => {
+          if (!conn || conn.fromMachineId !== machineTemplate.blueprintMachineId) return false;
+          const mat = getBlueprintMachineOutputMaterialId(machineTemplate, conn.fromPortIdx);
+          return mat === materialId;
+        });
+        const feedsExport = outgoingForMaterial.some(conn => exportTemplateIds.has(conn.toMachineId));
+        const feedsNonExport = outgoingForMaterial.some(conn => !exportTemplateIds.has(conn.toMachineId));
+
+        if (feedsExport) exportingMachines.push(machineTemplate.blueprintMachineId);
+        if (!feedsNonExport) noConsumerMachines.push(machineTemplate.blueprintMachineId);
+      });
+
+      const templateId = exportingMachines[0] || noConsumerMachines[0] || null;
+      if (!templateId) return;
+
+      const childId = childIdMap.get(templateId);
+      const templateMachine = (blueprint.machines || []).find(m => m.blueprintMachineId === templateId) || null;
+      outputMappings[portIdx] = {
+        materialId,
+        internalMachineId: childId,
+        internalPortIdx: getBlueprintMachineOutputPortIdxForMaterial(templateMachine, materialId),
+      };
+    });
+
+    const blueprintInstance = {
+      id: instanceId,
+      type: "blueprint_instance",
+      blueprintId: blueprint.id,
+      detached: false,
+      x: 0,
+      y: 0,
+      count: 1,
+      efficiency: 1.0,
+      childMachines,
+      childConnections,
+      portMappings: { inputs: [], outputs: outputMappings },
+      name: blueprint.name,
+      description: blueprint.description,
+      blueprintData: {
+        name: blueprint.name,
+        description: blueprint.description,
+        inputs: blueprint.inputs,
+        outputs: blueprint.outputs,
+        machines: blueprint.machines,
+        connections: blueprint.connections,
+      },
+    };
+
+    // Wire each blueprint output port to a finite-demand sink.
+    const demandNodes = [];
+    const conns = [];
+    (blueprint.outputs || []).forEach((out, portIdx) => {
+      const sinkId = `__cost_demand__${instanceId}__${portIdx}`;
+      demandNodes.push({
+        id: sinkId,
+        type: "virtual_demand",
+        demandRate: portIdx === (blueprint.outputs || []).findIndex(o => o && o.materialId === outputMaterialId) ? rounded : 0,
+        x: 0,
+        y: 0,
+        efficiency: 1.0,
+      });
+      conns.push({
+        id: `__cost_conn__${instanceId}__${portIdx}`,
+        fromMachineId: instanceId,
+        fromPortIdx: portIdx,
+        toMachineId: sinkId,
+        toPortIdx: 0,
+      });
+    });
+
+    const tempBuild = {
+      placedMachines: [blueprintInstance, ...demandNodes],
+      connections: conns,
+      selectedMachines: [],
+      selectedConnection: null,
+      camera: { x: 0, y: 0, zoom: 1.0 },
+    };
+
+    const savedBuild = AF.state.build;
+    const savedCalc = AF.state.calc;
+    try {
+      AF.state.build = tempBuild;
+      AF.state.calc = { lastCalculatedAt: 0 };
+      // Run the normal solver on the isolated build.
+      recalculateAll();
+
+      // Actual produced/exported rate for the selected output is measured at the blueprint output port.
+      const outputPortIdx = (blueprint.outputs || []).findIndex(o => o && o.materialId === outputMaterialId);
+      const outputRate = outputPortIdx >= 0 ? (getPortOutputRate(blueprintInstance, outputPortIdx) || 0) : 0;
+      const totalCostPerMinute = Number(AF.state.calc.totalCost) || 0;
+      const unitCost = outputRate > 0.0001 ? (totalCostPerMinute / outputRate) : Infinity;
+      const out = { unitCost, totalCostPerMinute, outputRate };
+      cache.blueprintUnitCostByDemand.set(key, out);
+      return out;
+    } finally {
+      AF.state.build = savedBuild;
+      AF.state.calc = savedCalc;
+    }
+  }
+
+  /**
+   * Estimated realised unit cost (copper per item) using recipe chains and cost blueprints for fuel/fertilizer.
+   * - Base materials are those with a buy price (treated as leaf inputs).
+   * - For craftables, uses a preferred recipe when multiple exist.
+   *
+   * @param {string} materialId
+   * @param {Set<string>} visited
+   * @returns {number}
+   */
+  function calculateEstimatedUnitCost(materialId, visited = new Set()) {
+    resetEstimatedCostCacheIfNeeded();
+    const cache = AF.state.estimatedCostCache;
+    if (cache.materialUnitCost.has(materialId)) return cache.materialUnitCost.get(materialId);
+
+    if (visited.has(materialId)) return Infinity;
+    visited.add(materialId);
+
+    const material = AF.core.getMaterialById(materialId);
+    if (!material) return Infinity;
+
+    // Base leaf: buy-priced materials are the "root" of all chains.
+    if (material.buyPrice != null && material.buyPrice >= 0) {
+      cache.materialUnitCost.set(materialId, material.buyPrice);
+      visited.delete(materialId);
+      return material.buyPrice;
+    }
+
+    const producing = (AF.state.db.recipes || []).filter(r =>
+      r && r.outputs && r.outputs.some(o => o && o.materialId === materialId)
+    );
+    if (!producing.length) {
+      cache.materialUnitCost.set(materialId, Infinity);
+      visited.delete(materialId);
+      return Infinity;
+    }
+
+    const preferred = producing.filter(r => !!r.preferredForCost);
+    const recipe = preferred[0] || producing[0];
+
+    const cost = calculateEstimatedRecipeOutputUnitCost(recipe, materialId, visited);
+    cache.materialUnitCost.set(materialId, cost);
+    visited.delete(materialId);
+    return cost;
+  }
+
+  function calculateEstimatedRecipeOutputUnitCost(recipe, outputMaterialId, visited) {
+    if (!recipe) return Infinity;
+
+    const machine = recipe.machineId ? AF.core.getMachineById(recipe.machineId) : null;
+    const effectiveTime = getEffectiveProcessingTime(recipe.processingTimeSec || 0);
+    if (!effectiveTime || effectiveTime <= 0) return Infinity;
+
+    const outputSpec = (recipe.outputs || []).find(o => o && o.materialId === outputMaterialId) || null;
+    if (!outputSpec || !(outputSpec.items > 0)) return Infinity;
+
+    // Cost per craft from explicit inputs
+    let costPerCraft = 0;
+    for (const inp of (recipe.inputs || [])) {
+      if (!inp || !inp.materialId || !(inp.items > 0)) return Infinity;
+      const unitCost = calculateEstimatedUnitCost(inp.materialId, visited);
+      if (!Number.isFinite(unitCost)) return Infinity;
+      costPerCraft += unitCost * inp.items;
+    }
+
+    // Fuel cost (implicit) if this recipe consumes heat
+    const heatBaseP = (recipe.heatConsumptionP != null ? recipe.heatConsumptionP : (machine?.heatConsumptionP ?? 0)) || 0;
+    const consumesHeat = heatBaseP > 0 && (!!machine?.requiresFurnace || recipe.heatConsumptionP != null);
+    if (consumesHeat) {
+      const settings = AF.state.settings || {};
+      const sel = settings.costBlueprints?.fuel || {};
+      const fuelBlueprintId = sel.blueprintId;
+      const fuelMaterialId = sel.outputMaterialId;
+      const fuelMat = fuelMaterialId ? AF.core.getMaterialById(fuelMaterialId) : null;
+      if (!fuelBlueprintId || !fuelMaterialId || !fuelMat || !fuelMat.isFuel || !Number.isFinite(fuelMat.fuelValue)) {
+        return Infinity;
+      }
+
+      const adjustedHeatPPerSec = getFuelConsumptionRate(heatBaseP);
+      const totalPPerCraft = adjustedHeatPPerSec * effectiveTime;
+      const adjustedFuelHeatValue = getFuelHeatValue(fuelMat.fuelValue); // P per fuel item
+      const fuelUnitsPerCraft = adjustedFuelHeatValue > 0 ? (totalPPerCraft / adjustedFuelHeatValue) : Infinity;
+      if (!Number.isFinite(fuelUnitsPerCraft)) return Infinity;
+
+      // Demand that amount of fuel per minute from the fuel blueprint to get the correct piecewise unit cost.
+      const fuelUnitsPerMinute = fuelUnitsPerCraft * (60 / effectiveTime);
+      const fuelEval = evaluateCostBlueprintAtDemand(fuelBlueprintId, fuelMaterialId, fuelUnitsPerMinute);
+      if (!Number.isFinite(fuelEval.unitCost)) return Infinity;
+
+      costPerCraft += fuelUnitsPerCraft * fuelEval.unitCost;
+    }
+
+    return costPerCraft / outputSpec.items;
+  }
+
+  /**
+   * Public helper: estimated unit cost for a specific recipe's specific output.
+   * This does NOT choose a preferred producing recipe for the output; it forces the given recipe.
+   *
+   * @param {string} recipeId
+   * @param {string} outputMaterialId
+   * @returns {number}
+   */
+  function calculateEstimatedRecipeOutputUnitCostById(recipeId, outputMaterialId) {
+    const recipe = recipeId ? AF.core.getRecipeById(recipeId) : null;
+    if (!recipe) return Infinity;
+    return calculateEstimatedRecipeOutputUnitCost(recipe, outputMaterialId, new Set([outputMaterialId]));
   }
 
   // Skill-derived helpers (moved from app.js so calculator can snapshot them).
@@ -2726,6 +3108,11 @@
    * @returns {number} Demand rate (items/min)
    */
   function getPortInputDemand(placedMachine, portIdx) {
+    // Internal-only finite demand sink (used for cost-blueprint evaluation).
+    if (placedMachine && placedMachine.type === "virtual_demand") {
+      return Number(placedMachine.demandRate) || 0;
+    }
+
     const countMultiplier = AF.state.calc?.countMultiplierByMachineId?.get?.(placedMachine.id) ?? 1;
     const effectiveCount = (placedMachine.count || 1) * countMultiplier;
 
@@ -2997,6 +3384,8 @@
     getAlchemyEfficiency,
     getEffectiveProcessingTime,
     getCostCalculationDetails,
+    calculateEstimatedUnitCost,
+    calculateEstimatedRecipeOutputUnitCostById,
     calculateRealizedCost
   });
 

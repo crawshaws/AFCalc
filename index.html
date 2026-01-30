@@ -377,9 +377,9 @@
         </div>
 
         <div class="field">
-          <label>Realized Cost (calculated)</label>
+          <label>Estimated Realised Cost (calculated)</label>
           <div style="padding: 8px; background: #2a2a2a; border-radius: 4px; font-family: monospace;" data-bind="realizedCost">—</div>
-          <div class="hint">Minimum cost based on buy price or production recipes.</div>
+          <div class="hint">Estimated unit cost based on recipe chains and your selected Cost Settings blueprints.</div>
         </div>
 
         <div class="editor__actions">
@@ -525,6 +525,14 @@
             <div class="hint">Optional (for future heat/fuel calculations); leave blank if unsure.</div>
           </div>
         </div>
+
+        <label class="checkboxRow">
+          <input type="checkbox" name="preferredForCost" data-bind="preferredForCost" />
+          <div>
+            <div><strong>Preferred for cost</strong></div>
+            <div class="hint">Use this recipe when estimating costs for its outputs.</div>
+          </div>
+        </label>
 
         <div class="subsection">
           <div class="subsection__title">Inputs (item count)</div>
@@ -696,6 +704,29 @@
         <div class="dialog__footer">
           <button class="btn" data-action="dialog:close">Cancel</button>
           <button class="btn btn--primary" data-action="settings:save-cost">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Preferred Recipe Dialog -->
+    <div id="preferredRecipeDialog" class="dialog hidden">
+      <div class="dialog__overlay"></div>
+      <div class="dialog__content">
+        <div class="dialog__header">
+          <h2 class="dialog__title">Choose preferred recipe</h2>
+          <button class="btn btn--sm" data-action="dialog:close">✕</button>
+        </div>
+        <div class="dialog__body">
+          <div class="hint" style="margin-top: 0;">
+            Select which recipe should be used when estimating costs.
+          </div>
+          <div id="preferredRecipeList" style="max-height: 360px; overflow-y: auto; margin-top: 10px;">
+            <!-- Recipe options will be rendered here -->
+          </div>
+        </div>
+        <div class="dialog__footer">
+          <button class="btn" data-action="dialog:close">Cancel</button>
+          <button class="btn btn--primary" data-action="preferred-recipe:confirm">OK</button>
         </div>
       </div>
     </div>

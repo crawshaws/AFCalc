@@ -1008,6 +1008,12 @@ body{
   color: var(--muted);
 }
 
+/* Preferred recipe picker (reuses storageTypeItem look) */
+.storageTypeItem.is-selected{
+  background: rgba(90,162,255,.12);
+  border-color: rgba(90,162,255,.45);
+}
+
 .blueprintsList{
   padding: 12px;
   overflow-y: auto;

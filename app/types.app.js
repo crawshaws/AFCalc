@@ -73,6 +73,7 @@
  *   machineId: string,
  *   processingTimeSec: number,
  *   heatConsumptionP: (number|null),
+ *   preferredForCost: (boolean|undefined),
  *   inputs: Array<RecipeIO>,
  *   outputs: Array<RecipeIO>,
  * }} Recipe
@@ -140,7 +141,7 @@
  */
 
 /**
- * @typedef {"machine"|"purchasing_portal"|"nursery"|"storage"|"export"|"blueprint"|"blueprint_instance"|"virtual_sink"|"virtual_source"} PlacedMachineType
+ * @typedef {"machine"|"purchasing_portal"|"nursery"|"storage"|"export"|"blueprint"|"blueprint_instance"|"virtual_sink"|"virtual_source"|"virtual_demand"} PlacedMachineType
  */
 
 /**
@@ -184,6 +185,9 @@
  *   actualInputRates: (Object.<string, number>|undefined),
  *   actualOutputRates: (Object.<string, number>|undefined),
  *   hasInsufficientInputs: (boolean|undefined),
+ *
+ *   // Internal-only finite demand sink (used for cost-blueprint evaluation)
+ *   demandRate: (number|undefined),
  *   _isVirtual: (boolean|undefined),
  *   _parentBlueprintId: (string|undefined),
  *   _isChildMachine: (boolean|undefined),
