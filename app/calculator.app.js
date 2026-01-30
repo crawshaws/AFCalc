@@ -385,19 +385,32 @@
       const toId = conn._resolvedToMachineId || conn.toMachineId;
       const toPortIdx = conn._resolvedToPortIdx !== undefined ? conn._resolvedToPortIdx : conn.toPortIdx;
       
-      // Virtual sink has infinite demand - always accepts full output
+      // Virtual sink has infinite demand, but must be treated as a LAST-RESORT sink
+      // (never steal flow from finite-demand consumers when supply is limited).
       if (conn._isVirtualSinkConnection || toId === "__virtual_sink__") {
         return {
           conn,
           maxDemand: Infinity,
           currentRate: 0,
-          satisfied: false
+          satisfied: false,
+          isSink: true
         };
       }
       
       const target = AF.core.findMachineInTree(toId);
       if (!target) {
         return { conn, maxDemand: 0, currentRate: 0, satisfied: true };
+      }
+
+      // Placeable export node acts as an infinite sink (like virtual sink), but must also be last-resort.
+      if (target.type === "export") {
+        return {
+          conn,
+          maxDemand: Infinity,
+          currentRate: 0,
+          satisfied: false,
+          isSink: true
+        };
       }
       
       const targetMachineData = target.machineId ? AF.core.getMachineById(target.machineId) : null;
@@ -415,43 +428,58 @@
         conn,
         maxDemand,
         currentRate: 0,
-        satisfied: false
+        satisfied: false,
+        isSink: false
       };
     });
     
-    let remaining = totalAvailable;
-    let changed = true;
-    const maxIterations = 10;
-    let iteration = 0;
-    
-    // Iterative redistribution
-    while (remaining > 0.01 && changed && iteration < maxIterations) {
-      changed = false;
-      iteration++;
+    function allocateFairly(infos, remaining) {
+      let changed = true;
+      const maxIterations = 10;
+      let iteration = 0;
       
-      // Find unsatisfied connections
-      const unsatisfied = connectionInfo.filter(info => !info.satisfied);
-      if (unsatisfied.length === 0) break;
-      
-      // Distribute remaining equally among unsatisfied
-      const share = remaining / unsatisfied.length;
-      
-      unsatisfied.forEach(info => {
-        const additionalCapacity = Math.min(share, info.maxDemand - info.currentRate);
+      // Iterative redistribution (equal share among unsatisfied until demands met)
+      while (remaining > 0.01 && changed && iteration < maxIterations) {
+        changed = false;
+        iteration++;
         
-        if (additionalCapacity > 0.01) {
-          info.currentRate += additionalCapacity;
-          remaining -= additionalCapacity;
-          changed = true;
+        const unsatisfied = infos.filter(info => !info.satisfied);
+        if (unsatisfied.length === 0) break;
+        
+        const share = remaining / unsatisfied.length;
+        
+        unsatisfied.forEach(info => {
+          const additionalCapacity = Math.min(share, info.maxDemand - info.currentRate);
           
-          // Mark as satisfied if at max demand
-          if (info.currentRate >= info.maxDemand - 0.01) {
+          if (additionalCapacity > 0.01) {
+            info.currentRate += additionalCapacity;
+            remaining -= additionalCapacity;
+            changed = true;
+            
+            if (info.currentRate >= info.maxDemand - 0.01) {
+              info.satisfied = true;
+            }
+          } else {
             info.satisfied = true;
           }
-        } else {
-          info.satisfied = true;
-        }
-      });
+        });
+      }
+      
+      return remaining;
+    }
+    
+    // Phase 1: satisfy finite-demand consumers first (never let sinks steal scarce flow)
+    let remaining = totalAvailable;
+    const primary = connectionInfo.filter(info => !info.isSink);
+    const sinks = connectionInfo.filter(info => info.isSink);
+    
+    remaining = allocateFairly(primary, remaining);
+    
+    // Phase 2: send any leftover to sinks (export / virtual sink)
+    if (remaining > 0.01 && sinks.length > 0) {
+      const share = remaining / sinks.length;
+      sinks.forEach(info => { info.currentRate += share; });
+      remaining = 0;
     }
     
     // Build result map
@@ -481,15 +509,6 @@
           inputs: [], // No inputs (coins assumed infinite)
           outputs: [
             { portIdx: 0, materialId: pm.materialId, rate: conveyorSpeed },
-          ],
-        });
-      } else if (pm.type === "fuel_source") {
-        // Fuel Source outputs fuel at calculated rate based on connected heating devices
-        const fuelRate = getPortOutputRate(pm, 0);
-        productionRates.set(pm.id, {
-          inputs: [], // No inputs (fuel source is infinite)
-          outputs: [
-            { portIdx: 0, materialId: pm.fuelId, rate: fuelRate },
           ],
         });
       } else if (pm.type === "nursery") {
@@ -640,13 +659,13 @@
     });
     
     // Only include machines that have outputs (are actually producing to something)
-    // OR are special source types (purchasing portal, fuel source, nursery)
+    // OR are special source types (purchasing portal, nursery)
     return allMachines.filter(pm => {
       if (machinesWithInputs.has(pm.id)) return false; // Has inputs, not a source
       
       // Must have outputs OR be a special source type
       const hasOutputs = machinesWithOutputs.has(pm.id);
-      const isSpecialSource = pm.type === "purchasing_portal" || pm.type === "fuel_source" || pm.type === "nursery";
+      const isSpecialSource = pm.type === "purchasing_portal" || pm.type === "nursery";
       
       return hasOutputs || isSpecialSource;
     });
@@ -672,7 +691,6 @@
       // Check if machine can actually produce something
       const machine = pm.machineId ? AF.core.getMachineById(pm.machineId) : null;
       if (machine && machine.kind === "storage") return false; // Storage is pass-through
-      if (pm.type === "fuel_source") return false; // Fuel sources don't export
       
       // Machine must be able to produce (has recipe with outputs, or is purchasing portal/nursery)
       const canProduce = pm.type === "purchasing_portal" || pm.type === "nursery" || 
@@ -708,6 +726,13 @@
     
     blueprint.machines.forEach(pm => {
       const count = pm.count || 1;
+
+      // Export nodes are virtual sinks used for planning demand/surplus.
+      // They should remain in the blueprint definition but should NOT count as "machines"
+      // for blueprint stats/UI.
+      if (pm.type === "export") {
+        return;
+      }
       
       if ((pm.type === "blueprint" || pm.type === "blueprint_instance") && pm.blueprintId) {
         const nestedCounts = calculateBlueprintMachineCounts(pm.blueprintId);
@@ -722,8 +747,6 @@
         let machineKey;
         if (pm.type === "purchasing_portal") {
           machineKey = "purchasing_portal";
-        } else if (pm.type === "fuel_source") {
-          machineKey = "fuel_source";
         } else if (pm.type === "nursery") {
           machineKey = "nursery";
         } else if (pm.machineId) {
@@ -809,6 +832,10 @@
     const machines = AF.state.build.placedMachines.filter(pm => selectedSet.has(pm.id));
     console.log("Machines to analyze:", machines.length);
 
+    // Export nodes are virtual sinks (infinite demand). For blueprint IO analysis we treat
+    // connections going INTO an Export node as leaving the blueprint (i.e., blueprint outputs).
+    const exportNodeIds = new Set(machines.filter(pm => pm.type === "export").map(pm => pm.id));
+
     // Calculate what each machine produces/consumes
     const productionRates = calculateProductionFlow(selectedMachineIds);
 
@@ -818,8 +845,13 @@
 
     // Check all connections to find boundary crossings
     AF.state.build.connections.forEach(conn => {
-      const fromInside = selectedSet.has(conn.fromMachineId);
-      const toInside = selectedSet.has(conn.toMachineId);
+      const fromInside = selectedSet.has(conn.fromMachineId) && !exportNodeIds.has(conn.fromMachineId);
+      let toInside = selectedSet.has(conn.toMachineId);
+
+      // Treat Export nodes as "outside" for IO purposes.
+      if (toInside && exportNodeIds.has(conn.toMachineId)) {
+        toInside = false;
+      }
 
       // Skip internal connections
       if (fromInside && toInside) return;
@@ -830,22 +862,28 @@
       const sourceMachine = AF.state.build.placedMachines.find(m => m.id === conn.fromMachineId);
       if (!sourceMachine) return;
 
+      // Ignore export nodes as sources (they have no outputs).
+      if (sourceMachine.type === "export") return;
+
       const materialId = AF.core.getMaterialIdFromPort(sourceMachine, conn.fromPortIdx, "output");
       if (!materialId) return;
 
       if (!fromInside && toInside) {
         // Connection from outside TO inside = input
         inputsMap.set(materialId, (inputsMap.get(materialId) || 0) + rate);
-        console.log(`Input: ${getMaterialById(materialId)?.name} @ ${rate}/min from outside`);
+        console.log(`Input: ${AF.core.getMaterialById(materialId)?.name} @ ${rate}/min from outside`);
       } else if (fromInside && !toInside) {
         // Connection from inside TO outside = output
         outputsMap.set(materialId, (outputsMap.get(materialId) || 0) + rate);
-        console.log(`Output: ${getMaterialById(materialId)?.name} @ ${rate}/min to outside`);
+        console.log(`Output: ${AF.core.getMaterialById(materialId)?.name} @ ${rate}/min to outside`);
       }
     });
 
     // Also check for unconnected ports (these are also external inputs/outputs)
     machines.forEach(pm => {
+      // Export nodes are sinks and should not contribute to blueprint IO.
+      if (pm.type === "export") return;
+
       const rates = productionRates.get(pm.id);
       if (!rates) return;
 
@@ -878,9 +916,9 @@
       });
 
       // Check outputs without connections
-      // Skip this check for infinite source machines (purchasing_portal, fuel_source)
+      // Skip this check for infinite source machines (purchasing_portal)
       // They only produce what's needed downstream, excess capacity isn't an "output"
-      const isInfiniteSource = pm.type === "purchasing_portal" || pm.type === "fuel_source";
+      const isInfiniteSource = pm.type === "purchasing_portal";
 
       if (!isInfiniteSource) {
         rates.outputs.forEach(out => {
@@ -1048,7 +1086,6 @@
       // Special types that don't have "insufficient inputs" semantics
       if (pm.type === "storage") return;
       if (pm.type === "purchasing_portal") return;
-      if (pm.type === "fuel_source") return;
       if (pm.type === "nursery") return;
       if (pm.type === "blueprint" || pm.type === "blueprint_instance") return;
       
@@ -1113,48 +1150,6 @@
 
     // UI-facing derived snapshots for special machine types (render reads these; no per-render production math)
     const uiByMachineId = new Map(); // placedMachineId -> object
-
-    // Fuel source UI snapshot
-    AF.state.build.placedMachines.forEach(pm => {
-      if (pm.type !== "fuel_source") return;
-      const fuelId = pm.fuelId || null;
-
-      let totalConsumptionP = 0;
-      const connections = AF.state.build.connections.filter(c => c.fromMachineId === pm.id);
-      connections.forEach(c => {
-        const target = AF.state.build.placedMachines.find(x => x.id === c.toMachineId);
-        if (!target || !target.machineId) return;
-        const targetDef = AF.core.getMachineById(target.machineId);
-        if (!targetDef || targetDef.kind !== "heating_device") return;
-
-        // Total heat for that heating device (including target count + toppers)
-        let heatP = getFuelConsumptionRateCalc(targetDef.baseHeatConsumptionP || 1);
-        (target.toppers || []).forEach(t => {
-          const tm = AF.core.getMachineById(t.machineId);
-          if (tm) heatP += getFuelConsumptionRateCalc(tm.heatConsumptionP || 0);
-        });
-        heatP *= (target.count || 1);
-        totalConsumptionP += heatP;
-      });
-
-      let fuelRate = 0;
-      let secondsPerFuel = null;
-      if (fuelId && totalConsumptionP > 0) {
-        const adjustedFuelValue = fuelHeatValueByMaterialId.get(fuelId);
-        if (adjustedFuelValue && adjustedFuelValue > 0) {
-          fuelRate = (60 * totalConsumptionP) / adjustedFuelValue;
-          secondsPerFuel = adjustedFuelValue / totalConsumptionP;
-        }
-      }
-
-      uiByMachineId.set(pm.id, {
-        kind: "fuel_source",
-        fuelId,
-        totalConsumptionP,
-        fuelRate,
-        secondsPerFuel,
-      });
-    });
 
     // Nursery UI snapshot
     AF.state.build.placedMachines.forEach(pm => {
@@ -1272,10 +1267,13 @@
         const fuelConn = fuelConnections[0];
         const source = AF.state.build.placedMachines.find(x => x.id === fuelConn.fromMachineId);
         if (source) {
-          const key = `${source.id}::${String(fuelConn.fromPortIdx)}`;
-          const fuelMaterialId = AF.state.calc?.port?.outputMaterial?.get(key) ?? null;
+          // Resolve material directly (don't rely on port snapshot here)
+          const fuelMaterialId = AF.core.getMaterialIdFromPort(source, fuelConn.fromPortIdx, "output") ?? null;
+          const fuelMat = fuelMaterialId ? AF.core.getMaterialById(fuelMaterialId) : null;
           const adjustedFuelValue = fuelMaterialId ? fuelHeatValueByMaterialId.get(fuelMaterialId) : null;
-          if (fuelMaterialId && adjustedFuelValue && adjustedFuelValue > 0) {
+
+          // Only valid if the connected material is actually a fuel
+          if (fuelMat && fuelMat.isFuel && adjustedFuelValue && adjustedFuelValue > 0) {
             const requiredRate = (60 * totalHeatP) / adjustedFuelValue;
             const incomingRate = getConnectionRate(fuelConn);
             const hasShortage = incomingRate < requiredRate - 0.01;
@@ -1288,7 +1286,7 @@
               shortageAmount: hasShortage ? (requiredRate - incomingRate) : 0,
             };
           } else {
-            fuelStatus = { mode: "invalid" };
+            fuelStatus = { mode: "invalid", fuelMaterialId };
           }
         }
       } else if (!hasFuelConnection && totalHeatP > 0 && selectedFuelId) {
@@ -1516,6 +1514,21 @@
               );
               
               if (!hasExternalConnection) {
+                // If this internal port already feeds a real Export node (infinite sink),
+                // do NOT also add a virtual sink for the same port. Otherwise the output will
+                // get split between Export and the virtual sink (halving "exports" and causing
+                // confusing underclock/output displays).
+                const existingOutgoing = outputConnections.get(pm.id) || [];
+                const alreadyHasExportSink = existingOutgoing.some(c => {
+                  if (String(c.fromPortIdx) !== String(mapping.internalPortIdx)) return false;
+                  const toId = c._resolvedToMachineId || c.toMachineId;
+                  if (toId === VIRTUAL_SINK_ID) return true;
+                  const target = AF.core.findMachineInTree(toId);
+                  return !!target && target.type === "export";
+                });
+
+                if (alreadyHasExportSink) return;
+
                 // Blueprint output port is not connected externally - add virtual sink for this specific port
                 const virtualConn = {
                   id: `virtual_sink_conn_${pm.id}_port${mapping.internalPortIdx}`,
@@ -1547,8 +1560,8 @@
     // These represent IMPORTS to the production line
     allMachines.forEach(pm => {
       // Only add virtual source for machines that actually need inputs
-      // Skip infinite sources (purchasing portal, fuel source, nursery)
-      const isInfiniteSource = pm.type === "purchasing_portal" || pm.type === "fuel_source" || pm.type === "nursery";
+      // Skip infinite sources (purchasing portal, nursery)
+      const isInfiniteSource = pm.type === "purchasing_portal" || pm.type === "nursery";
       
       if (!isInfiniteSource) {
         // For regular machines, check each input port
@@ -1684,13 +1697,7 @@
         return 1.0;
       }
       
-      // Fuel sources always run at 100% (they scale their output based on connected heating devices)
-      if (pm.type === "fuel_source") {
-        pm.efficiency = 1.0;
-        processed.add(machineId);
-        processing.delete(machineId);
-        return 1.0;
-      }
+      // (Fuel Source node removed)
       
       // Purchasing portals should scale based on downstream demand (backpressure applies)
       
@@ -1856,29 +1863,6 @@
       calculateMachineEfficiency(pm.id);
     });
     
-    // Update blueprint instances with efficiency from their children (for UI display)
-    AF.state.build.placedMachines.forEach(pm => {
-      if ((pm.type === "blueprint_instance" || pm.type === "blueprint") && pm.childMachines) {
-        // Blueprint efficiency is the minimum of all PRODUCTION child machines
-        // Exclude source machines (purchasing portals, fuel sources, nurseries, storage)
-        // as they naturally scale to downstream demand and don't represent bottlenecks
-        let minEfficiency = 1.0;
-        pm.childMachines.forEach(child => {
-          // Skip source machines when calculating blueprint efficiency
-          const isSourceMachine = child.type === "purchasing_portal" || 
-                                  child.type === "fuel_source" || 
-                                  child.type === "nursery" ||
-                                  child.type === "storage";
-          
-          if (!isSourceMachine) {
-            const childEff = child.efficiency !== undefined ? child.efficiency : 1.0;
-            minEfficiency = Math.min(minEfficiency, childEff);
-          }
-        });
-        pm.efficiency = minEfficiency;
-      }
-    });
-    
     // Update connection actual rates based on calculated efficiencies
     // Group connections by source machine and port (using RESOLVED IDs for child machines)
     const sourcePortMap = new Map(); // `${resolvedMachineId}-${resolvedPortIdx}` -> [connections]
@@ -1918,6 +1902,93 @@
         conn.lastCalculated = Date.now();
       });
     });
+
+    // Update blueprint instances with an EXTERNAL-IO utilization efficiency (for UI display only).
+    // This is NOT based on internal child machine efficiencies; it's a "do we have spare capacity"
+    // indicator based on:
+    // - external output demand vs blueprint max output capacity (belt limits via actualRate),
+    // - and external input supply vs required input capacity.
+    AF.state.build.placedMachines.forEach(pm => {
+      if (!(pm.type === "blueprint_instance" || pm.type === "blueprint")) return;
+      if (!pm.childMachines || !pm.portMappings) return;
+
+      const outputMappings = pm.portMappings.outputs || [];
+      const inputMappings = pm.portMappings.inputs || [];
+
+      const exportChildIds = new Set(
+        (pm.childMachines || []).filter(m => m.type === "export").map(m => m.id)
+      );
+
+      const getExternalOutputRate = (portIdx) => {
+        // External connections from the blueprint instance port (top-level only)
+        let rate = 0;
+        AF.state.build.connections.forEach(c => {
+          if (c.fromMachineId !== pm.id) return;
+          if (String(c.fromPortIdx) !== String(portIdx)) return;
+          rate += (c.actualRate ?? 0);
+        });
+        return rate;
+      };
+
+      const outputPortHasInfiniteSink = (mapping) => {
+        if (!mapping) return false;
+
+        // If the mapped internal output already feeds an Export node (or virtual sink),
+        // then output-demand is effectively infinite and the blueprint should not show "spare capacity"
+        // for this port.
+        const allConns = AF.core.getAllConnectionsInTree();
+        return allConns.some(c => {
+          const fromId = c._resolvedFromMachineId || c.fromMachineId;
+          const fromPort = c._resolvedFromPortIdx !== undefined ? c._resolvedFromPortIdx : c.fromPortIdx;
+          if (fromId !== mapping.internalMachineId) return false;
+          if (String(fromPort) !== String(mapping.internalPortIdx)) return false;
+
+          const toId = c._resolvedToMachineId || c.toMachineId;
+          if (toId === "__virtual_sink__" || c._isVirtualSinkConnection) return true;
+          if (exportChildIds.has(toId)) return true;
+          const target = AF.core.findMachineInTree(toId);
+          return !!target && target.type === "export";
+        });
+      };
+
+      const getExternalInputRate = (portIdx) => {
+        let rate = 0;
+        AF.state.build.connections.forEach(c => {
+          if (c.toMachineId !== pm.id) return;
+          if (String(c.toPortIdx) !== String(portIdx)) return;
+          rate += (c.actualRate ?? 0);
+        });
+        return rate;
+      };
+
+      let ioEfficiency = 1.0;
+
+      // Outputs:
+      // - If the port is backed by an infinite sink (Export node or virtual sink), treat as fully utilized.
+      // - Otherwise compare external usage vs blueprint port capacity.
+      outputMappings.forEach((mapping, portIdx) => {
+        if (!mapping) return;
+        if (outputPortHasInfiniteSink(mapping)) return; // full utilization for UI badge
+
+        const capacity = getPortOutputRate(pm, portIdx) || 0;
+        if (capacity <= 0) return;
+        const used = getExternalOutputRate(portIdx);
+        ioEfficiency = Math.min(ioEfficiency, Math.max(0, Math.min(1, used / capacity)));
+      });
+
+      // Inputs: treat "no external connection" as fully supplied via imports (virtual source),
+      // but if externally connected, show underutilization when supply is below required capacity.
+      inputMappings.forEach((mapping, portIdx) => {
+        if (!mapping) return;
+        const required = getPortInputDemand(pm, portIdx) || 0;
+        if (required <= 0) return;
+        const supplied = getExternalInputRate(portIdx);
+        if (supplied <= 0.0001) return; // imported (assumed unlimited) => no underclock
+        ioEfficiency = Math.min(ioEfficiency, Math.max(0, Math.min(1, supplied / required)));
+      });
+
+      pm.efficiency = ioEfficiency;
+    });
   }
 
   function getNetProduction(selectedMachineIds = null) {
@@ -1936,6 +2007,29 @@
     // Get all REAL connections (not virtual)
     const allConnections = AF.core.getAllConnectionsInTree();
     
+    const exportNodeIds = new Set(allMachines.filter(pm => pm.type === "export").map(pm => pm.id));
+
+    // 1) Explicit exports: any real connection that goes into an Export node counts as export.
+    // Use actual distributed rates to correctly capture "surplus" in self-fed/cyclic graphs.
+    allConnections.forEach(conn => {
+      const toId = conn._resolvedToMachineId || conn.toMachineId;
+      if (!exportNodeIds.has(toId)) return;
+
+      const fromId = conn._resolvedFromMachineId || conn.fromMachineId;
+      const fromPortIdx = conn._resolvedFromPortIdx !== undefined ? conn._resolvedFromPortIdx : conn.fromPortIdx;
+      const source = AF.core.findMachineInTree(fromId);
+      if (!source) return;
+
+      const materialId = AF.core.getMaterialIdFromPort(source, fromPortIdx, "output");
+      if (!materialId) return;
+
+      const rate = conn.actualRate ?? 0;
+      if (rate <= 0) return;
+
+      exports.set(materialId, (exports.get(materialId) || 0) + rate);
+    });
+
+    // 2) Implicit exports/imports: unconnected producers/consumers
     allMachines.forEach(pm => {
       const rates = productionRates.get(pm.id);
       if (!rates) return;
@@ -1950,13 +2044,15 @@
         return toId === pm.id;
       });
       
-      // Check if this machine has real output connections
+      // Check if this machine has real output connections (excluding exports to Export node)
       const hasRealOutputs = allConnections.some(conn => {
         const fromId = conn._resolvedFromMachineId || conn.fromMachineId;
+        const toId = conn._resolvedToMachineId || conn.toMachineId;
+        if (exportNodeIds.has(toId)) return false;
         return fromId === pm.id;
       });
       
-      const isInfiniteSource = pm.type === "purchasing_portal" || pm.type === "fuel_source" || pm.type === "nursery";
+      const isInfiniteSource = pm.type === "purchasing_portal" || pm.type === "nursery";
       
       // Track IMPORTS: machines needing inputs but have no real input connections
       rates.inputs.forEach(inp => {
@@ -2337,37 +2433,7 @@
       if (placedMachine.type === "purchasing_portal") {
         return getConveyorSpeed();
       }
-      if (placedMachine.type === "fuel_source") {
-        // Calculate fuel rate based on connected heating devices
-        const fuel = placedMachine.fuelId ? AF.core.getMaterialById(placedMachine.fuelId) : null;
-        if (!fuel || !fuel.fuelValue) return 0;
-
-        let totalConsumptionP = 0;
-        const connections = AF.state.build.connections.filter(conn => conn.fromMachineId === placedMachine.id);
-
-        connections.forEach(conn => {
-          const targetMachine = AF.state.build.placedMachines.find(pm => pm.id === conn.toMachineId);
-          if (!targetMachine) return;
-
-          const targetMachineDef = AF.core.getMachineById(targetMachine.machineId);
-          if (targetMachineDef && targetMachineDef.kind === "heating_device") {
-            // Base consumption with skill modifier
-            let heatP = getFuelConsumptionRate(targetMachineDef.baseHeatConsumptionP || 1);
-            // Add topper consumption with skill modifier
-            (targetMachine.toppers || []).forEach(topper => {
-              const topperMachine = AF.core.getMachineById(topper.machineId);
-              if (topperMachine) {
-                heatP += getFuelConsumptionRate(topperMachine.heatConsumptionP || 0);
-              }
-            });
-            totalConsumptionP += heatP;
-          }
-        });
-
-        if (totalConsumptionP === 0) return 0;
-        const adjustedFuelValue = getFuelHeatValue(fuel.fuelValue);
-        return (60 * totalConsumptionP) / adjustedFuelValue;
-      }
+      // (Fuel Source node removed)
       if (placedMachine.type === "storage") {
         // Storage: Each output port is independently capped at conveyor speed
         // This represents a single belt/port, not multiple belts
@@ -2585,16 +2651,21 @@
       totalHeatP *= count;
 
       // Prefer incoming fuel connection (actual fuel)
-      const fuelConnection = AF.state.build.connections.find(
-        conn => conn.toMachineId === placedMachine.id && conn.toPortIdx === "fuel"
-      );
+      // IMPORTANT: Must consider blueprint childConnections too (tree), not just top-level build connections.
+      const fuelConnection = AF.core.getAllConnectionsInTree().find(conn => {
+        const toId = conn._resolvedToMachineId || conn.toMachineId;
+        const toPort = conn._resolvedToPortIdx !== undefined ? conn._resolvedToPortIdx : conn.toPortIdx;
+        return toId === placedMachine.id && String(toPort) === "fuel";
+      });
 
       /** @type {string|null} */
       let fuelMaterialId = null;
       if (fuelConnection) {
-        const sourceMachine = AF.state.build.placedMachines.find(pm => pm.id === fuelConnection.fromMachineId);
+        const fromId = fuelConnection._resolvedFromMachineId || fuelConnection.fromMachineId;
+        const fromPort = fuelConnection._resolvedFromPortIdx !== undefined ? fuelConnection._resolvedFromPortIdx : fuelConnection.fromPortIdx;
+        const sourceMachine = AF.core.findMachineInTree(fromId);
         if (sourceMachine) {
-          fuelMaterialId = AF.core.getMaterialIdFromPort(sourceMachine, fuelConnection.fromPortIdx, "output");
+          fuelMaterialId = AF.core.getMaterialIdFromPort(sourceMachine, fromPort, "output");
         }
       } else {
         // Preview fuel mode (no connection) should still count as an import requirement

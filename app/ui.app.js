@@ -700,6 +700,9 @@
       case "file:export-full":
         AF.core?.exportFullState?.();
         return;
+      case "file:export-build":
+        AF.core?.exportBuildState?.();
+        return;
       case "file:import": {
         const input = $("#importFileInput");
         if (!input) return;
@@ -763,6 +766,12 @@
         return;
       case "blueprint:delete":
         await deleteBlueprint(data.blueprintDeleteId);
+        return;
+      case "blueprint:add-items-to-canvas":
+        addBlueprintItemsToCanvas(data.blueprintAddItemsId);
+        return;
+      case "blueprint:edit-as-copy":
+        enterBlueprintEditModeAsCopyFromSidebar(data.blueprintEditCopyId);
         return;
       case "blueprint:save-edit":
         await saveBlueprintEdit();
@@ -915,17 +924,17 @@
         <button class="contextMenu__item" data-action="canvas:add-machine">
           <span>+ Add Machine</span>
         </button>
-        <button class="contextMenu__item" data-action="canvas:add-storage">
-          <span>+ Add Storage</span>
-        </button>
         <button class="contextMenu__item" data-action="canvas:add-portal">
           <span>+ Add Purchasing Portal</span>
         </button>
-        <button class="contextMenu__item" data-action="canvas:add-fuel-source">
-          <span>+ Add Fuel Source</span>
-        </button>
         <button class="contextMenu__item" data-action="canvas:add-nursery">
           <span>+ Add Nursery</span>
+        </button>
+        <button class="contextMenu__item" data-action="canvas:add-storage">
+          <span>+ Add Storage</span>
+        </button>
+        <button class="contextMenu__item" data-action="canvas:add-export">
+          <span>📦 Add Export</span>
         </button>
         <button class="contextMenu__item" data-action="canvas:add-blueprint">
           <span>📐 Add Blueprint</span>
@@ -965,6 +974,15 @@
           menu.remove();
         }
       }
+      if (e.target.closest("[data-action='canvas:add-export']")) {
+        const menu = e.target.closest(".contextMenu");
+        if (menu) {
+          const x = parseFloat(menu.dataset.x);
+          const y = parseFloat(menu.dataset.y);
+          addExportNodeToCanvas(x, y);
+          menu.remove();
+        }
+      }
       if (e.target.closest("[data-action='canvas:add-storage']")) {
         const menu = e.target.closest(".contextMenu");
         if (menu) {
@@ -980,15 +998,6 @@
           const x = parseFloat(menu.dataset.x);
           const y = parseFloat(menu.dataset.y);
           addPurchasingPortalToCanvas(x, y);
-          menu.remove();
-        }
-      }
-      if (e.target.closest("[data-action='canvas:add-fuel-source']")) {
-        const menu = e.target.closest(".contextMenu");
-        if (menu) {
-          const x = parseFloat(menu.dataset.x);
-          const y = parseFloat(menu.dataset.y);
-          addFuelSourceToCanvas(x, y);
           menu.remove();
         }
       }
@@ -1622,14 +1631,6 @@
         return;
       }
 
-      const fuelMaterialSelect = e.target.closest("[data-fuel-material-select]");
-      if (fuelMaterialSelect) {
-        const placedMachineId = fuelMaterialSelect.closest("[data-placed-machine]").dataset.placedMachine;
-        const fuelId = fuelMaterialSelect.value;
-        updateFuelSourceMaterial(placedMachineId, fuelId);
-        return;
-      }
-
       const nurseryPlantSelect = e.target.closest("[data-nursery-plant-select]");
       if (nurseryPlantSelect) {
         const placedMachineId = nurseryPlantSelect.closest("[data-placed-machine]").dataset.placedMachine;
@@ -1824,14 +1825,16 @@
     // Populate included machines list
     const includedEl = $("#blueprintIncludedMachines");
     if (includedEl) {
-      includedEl.innerHTML = analysis.machines.map(pm => {
+      // Export nodes are virtual sinks; keep them in the blueprint but don't show them as "machines"
+      // in blueprint-related UI.
+      includedEl.innerHTML = analysis.machines
+        .filter(pm => pm.type !== "export")
+        .map(pm => {
         let machineName = "Unknown";
 
         // Handle special machine types
         if (pm.type === "purchasing_portal") {
           machineName = "Purchasing Portal";
-        } else if (pm.type === "fuel_source") {
-          machineName = "Fuel Source";
         } else if (pm.type === "nursery") {
           machineName = "Nursery";
         } else if (pm.type === "blueprint" || pm.type === "blueprint_instance") {
@@ -2035,23 +2038,22 @@
     setStatus("Purchasing Portal added to canvas.");
   }
 
-  function addFuelSourceToCanvas(x, y) {
+  function addExportNodeToCanvas(x, y) {
     const id = makeId("pm");
     const placedMachine = {
       id,
-      type: "fuel_source",
+      type: "export",
       machineId: null,
       recipeId: null,
       count: 1,
-      fuelId: null, // Fuel material
       x: x !== undefined ? x : AF.state.build.camera.x,
       y: y !== undefined ? y : AF.state.build.camera.y,
     };
 
     AF.state.build.placedMachines.push(placedMachine);
     AF.core?.saveBuild?.();
-    AF.scheduler?.invalidate?.({ needsRecalc: false, needsRender: true, forceRecreate: true });
-    setStatus("Fuel Source added to canvas.");
+    AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: true });
+    setStatus("Export node added to canvas.");
   }
 
   function addNurseryToCanvas(x, y) {
@@ -2169,7 +2171,8 @@
 
     AF.state.build.placedMachines.push(clone);
     AF.core?.saveBuild?.();
-    AF.scheduler?.invalidate?.({ needsRecalc: false, needsRender: true, forceRecreate: true });
+    // Topology changed (new machine), must recalc flows + summary
+    AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: true });
     setStatus(`Machine cloned successfully.`);
   }
 
@@ -2198,7 +2201,8 @@
 
     AF.state.build.selectedMachines = [];
     AF.core?.saveBuild?.();
-    AF.scheduler?.invalidate?.({ needsRecalc: false, needsRender: true, forceRecreate: true });
+    // Topology changed (machines removed), must recalc flows + summary
+    AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: true });
     setStatus(`${count} machine${count > 1 ? 's' : ''} removed from canvas.`);
   }
 
@@ -2213,7 +2217,8 @@
     AF.state.build.selectedMachines = AF.state.build.selectedMachines.filter(id => id !== machineId);
 
     AF.core?.saveBuild?.();
-    AF.scheduler?.invalidate?.({ needsRecalc: false, needsRender: true, forceRecreate: true });
+    // Topology changed (machine removed), must recalc flows + summary
+    AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: true });
     setStatus("Machine removed from canvas.");
   }
 
@@ -2231,7 +2236,8 @@
     }
 
     AF.core?.saveBuild?.();
-    AF.scheduler?.invalidate?.({ needsRecalc: false, needsRender: true, forceRecreate: true });
+    // Topology changed (connection removed), must recalc flows + summary
+    AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: true });
     setStatus("Connection removed.");
   }
 
@@ -2291,15 +2297,6 @@
     pm.materialId = materialId || null;
     AF.core?.saveBuild?.();
     AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: true }); // Force recreate - material selection changed
-  }
-
-  function updateFuelSourceMaterial(machineId, fuelId) {
-    const pm = AF.state.build.placedMachines.find(m => m.id === machineId);
-    if (!pm || pm.type !== "fuel_source") return;
-
-    pm.fuelId = fuelId || null;
-    AF.core?.saveBuild?.();
-    AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: true }); // Force recreate - fuel selection changed
   }
 
   function updateNurseryPlant(machineId, plantId) {
@@ -2889,7 +2886,261 @@
     AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: true });
     updateSelectionClasses();
 
-    setStatus(`Blueprint "${blueprint.name}" placed on canvas (${childMachines.length} machines inside).`);
+    const displayMachineCount = childMachines.filter(m => m.type !== "export").length;
+    setStatus(`Blueprint "${blueprint.name}" placed on canvas (${displayMachineCount} machines inside).`);
+  }
+
+  /**
+   * Add a blueprint's internal items as normal items on the main canvas.
+   * - Does NOT place a blueprint container card.
+   * - Expands nested blueprint instances when possible via their stored `portMappings`.
+   */
+  function addBlueprintItemsToCanvas(blueprintId) {
+    if (!blueprintId) return;
+    const blueprint = AF.state.db.blueprints.find(bp => bp.id === blueprintId);
+    if (!blueprint) return;
+
+    const bbox = measureBlueprintDefinitionBounds(blueprint);
+    if (!bbox) {
+      setStatus(`Blueprint "${blueprint.name}" has no placeable items.`, "warning");
+      return;
+    }
+
+    const cam = AF.state.build.camera || { x: 0, y: 0, zoom: 1.0 };
+    const contentCenterX = (bbox.minX + bbox.maxX) / 2;
+    const contentCenterY = (bbox.minY + bbox.maxY) / 2;
+    const offsetX = cam.x - contentCenterX;
+    const offsetY = cam.y - contentCenterY;
+
+    // Treat blueprint definition as a graph where node ids are blueprintMachineId
+    const graphMachines = (blueprint.machines || []).map(m => {
+      const copy = JSON.parse(JSON.stringify(m));
+      copy.id = copy.blueprintMachineId;
+      return copy;
+    });
+    const graphConnections = (blueprint.connections || []).map(c => ({
+      id: makeId("conn"),
+      fromMachineId: c.fromMachineId,
+      fromPortIdx: c.fromPortIdx,
+      toMachineId: c.toMachineId,
+      toPortIdx: c.toPortIdx
+    }));
+
+    const flattened = flattenMachineGraphForCanvas(graphMachines, graphConnections, offsetX, offsetY);
+    if (!flattened.machines.length) {
+      setStatus(`Blueprint "${blueprint.name}" has no placeable items.`, "warning");
+      return;
+    }
+
+    AF.state.build.placedMachines.push(...flattened.machines);
+    AF.state.build.connections.push(...flattened.connections);
+    AF.state.build.selectedMachines = flattened.machines.map(m => m.id);
+
+    AF.core?.saveBuild?.();
+    AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: true });
+    updateSelectionClasses();
+
+    setStatus(`Added "${blueprint.name}" items to canvas (${flattened.machines.length} items).`);
+  }
+
+  /**
+   * Open a blueprint in edit mode from the sidebar, but force "Save" to create a copy.
+   */
+  function enterBlueprintEditModeAsCopyFromSidebar(blueprintId) {
+    if (!blueprintId) return;
+    const blueprint = AF.state.db.blueprints.find(bp => bp.id === blueprintId);
+    if (!blueprint) return;
+
+    AF.state.blueprintEditStack.push({
+      placedMachines: JSON.parse(JSON.stringify(AF.state.build.placedMachines)),
+      connections: JSON.parse(JSON.stringify(AF.state.build.connections)),
+      camera: { ...state.build.camera },
+      selectedMachines: [...state.build.selectedMachines],
+      editContext: AF.state.currentBlueprintEdit ? JSON.parse(JSON.stringify(AF.state.currentBlueprintEdit)) : null,
+    });
+
+    // Generate new IDs for editing
+    const idMap = new Map();
+    const machines = (blueprint.machines || []).map(templateMachine => {
+      const newId = makeId("pm");
+      idMap.set(templateMachine.blueprintMachineId, newId);
+      const machine = JSON.parse(JSON.stringify(templateMachine));
+      machine.id = newId;
+      return machine;
+    });
+
+    const connections = (blueprint.connections || []).map(templateConn => {
+      return {
+        id: makeId("conn"),
+        fromMachineId: idMap.get(templateConn.fromMachineId),
+        fromPortIdx: templateConn.fromPortIdx,
+        toMachineId: idMap.get(templateConn.toMachineId),
+        toPortIdx: templateConn.toPortIdx,
+      };
+    });
+
+    AF.state.currentBlueprintEdit = {
+      instanceId: null,
+      blueprintId: blueprint.id,
+      detached: false,
+      originalBlueprint: JSON.parse(JSON.stringify(blueprint)),
+      childIdMap: idMap,
+      forceSaveAsNew: true,
+      startedFromSidebar: true,
+    };
+
+    AF.state.build.placedMachines = machines;
+    AF.state.build.connections = connections;
+    AF.state.build.selectedMachines = [];
+    AF.state.build.camera = { x: 0, y: 0, zoom: 1.0 };
+
+    AF.scheduler.invalidate({ needsRecalc: true, needsRender: true, forceRecreate: true });
+    updateBlueprintEditUI();
+    setStatus(`Editing copy of blueprint: ${blueprint.name}`);
+  }
+
+  function measureBlueprintDefinitionBounds(blueprint) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let any = false;
+
+    function walk(machines, dx, dy) {
+      (machines || []).forEach(m => {
+        if (!m || m.type === "export") return;
+
+        const x = (Number(m.x) || 0) + dx;
+        const y = (Number(m.y) || 0) + dy;
+
+        const hasChildren = Array.isArray(m.childMachines) && m.childMachines.length > 0;
+        if ((m.type === "blueprint_instance" || m.type === "blueprint") && hasChildren) {
+          walk(m.childMachines, x, y);
+          return;
+        }
+
+        any = true;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      });
+    }
+
+    walk(blueprint.machines || [], 0, 0);
+    if (!any) return null;
+    return { minX, minY, maxX, maxY };
+  }
+
+  /**
+   * Flattens a machine graph onto the canvas by removing blueprint containers and promoting their child machines.
+   * @returns {{ machines: Array<any>, connections: Array<any>, oldToNew: Map<string, string> }}
+   */
+  function flattenMachineGraphForCanvas(machines, connections, offsetX, offsetY) {
+    const keptMachines = [];
+    const keptConnections = [];
+
+    /** @type {Map<string, string>} */
+    const idRemap = new Map(); // old -> new (only for machines kept at this level)
+
+    /** @type {Map<string, { inputs: Map<number, { machineId: string, portIdx: number }>, outputs: Map<number, { machineId: string, portIdx: number }> }>} */
+    const containerEndpoints = new Map();
+
+    /** @type {Map<string, string>} */
+    const oldToNewAll = new Map(); // includes nested mappings for portMapping resolution
+
+    function isBlueprintContainer(m) {
+      return (
+        (m.type === "blueprint_instance" || m.type === "blueprint") &&
+        Array.isArray(m.childMachines) &&
+        Array.isArray(m.childConnections) &&
+        m.portMappings &&
+        (Array.isArray(m.portMappings.inputs) || Array.isArray(m.portMappings.outputs))
+      );
+    }
+
+    // 1) Process machines: keep non-container machines, expand containers recursively.
+    (machines || []).forEach(m => {
+      if (!m || m.type === "export") return;
+
+      const mx = offsetX + (Number(m.x) || 0);
+      const my = offsetY + (Number(m.y) || 0);
+
+      if (isBlueprintContainer(m)) {
+        const child = flattenMachineGraphForCanvas(m.childMachines, m.childConnections, mx, my);
+
+        keptMachines.push(...child.machines);
+        keptConnections.push(...child.connections);
+
+        const endpoints = { inputs: new Map(), outputs: new Map() };
+
+        const inputs = Array.isArray(m.portMappings?.inputs) ? m.portMappings.inputs : [];
+        inputs.forEach((mp, idx) => {
+          const portIdx = Number(mp?.portIdx ?? idx);
+          const internalOldId = mp?.internalMachineId;
+          const internalPortIdx = Number(mp?.internalPortIdx ?? 0);
+          if (!internalOldId) return;
+          const internalNewId = child.oldToNew.get(internalOldId);
+          if (!internalNewId) return;
+          endpoints.inputs.set(portIdx, { machineId: internalNewId, portIdx: internalPortIdx });
+        });
+
+        const outputs = Array.isArray(m.portMappings?.outputs) ? m.portMappings.outputs : [];
+        outputs.forEach((mp, idx) => {
+          const portIdx = Number(mp?.portIdx ?? idx);
+          const internalOldId = mp?.internalMachineId;
+          const internalPortIdx = Number(mp?.internalPortIdx ?? 0);
+          if (!internalOldId) return;
+          const internalNewId = child.oldToNew.get(internalOldId);
+          if (!internalNewId) return;
+          endpoints.outputs.set(portIdx, { machineId: internalNewId, portIdx: internalPortIdx });
+        });
+
+        containerEndpoints.set(m.id, endpoints);
+
+        for (const [k, v] of child.oldToNew.entries()) oldToNewAll.set(k, v);
+        return;
+      }
+
+      const newId = makeId("pm");
+      idRemap.set(m.id, newId);
+      oldToNewAll.set(m.id, newId);
+
+      const copy = JSON.parse(JSON.stringify(m));
+      copy.id = newId;
+      copy.x = mx;
+      copy.y = my;
+      delete copy._parentBlueprintId;
+      delete copy._isChildMachine;
+      keptMachines.push(copy);
+    });
+
+    function resolveEndpoint(machineId, portIdx, kind) {
+      const idx = Number(portIdx);
+      if (containerEndpoints.has(machineId)) {
+        const ep = kind === "input"
+          ? containerEndpoints.get(machineId).inputs.get(idx)
+          : containerEndpoints.get(machineId).outputs.get(idx);
+        return ep ? { machineId: ep.machineId, portIdx: ep.portIdx } : null;
+      }
+      const newId = idRemap.get(machineId);
+      if (!newId) return null;
+      return { machineId: newId, portIdx: idx };
+    }
+
+    // 2) Process connections at this level (child connections were already merged above)
+    (connections || []).forEach(conn => {
+      if (!conn) return;
+      const from = resolveEndpoint(conn.fromMachineId, conn.fromPortIdx, "output");
+      const to = resolveEndpoint(conn.toMachineId, conn.toPortIdx, "input");
+      if (!from || !to) return;
+      keptConnections.push({
+        id: makeId("conn"),
+        fromMachineId: from.machineId,
+        fromPortIdx: from.portIdx,
+        toMachineId: to.machineId,
+        toPortIdx: to.portIdx,
+      });
+    });
+
+    return { machines: keptMachines, connections: keptConnections, oldToNew: oldToNewAll };
   }
 
 
@@ -2899,6 +3150,25 @@
    */
   function buildBlueprintPortMappings(blueprint, instanceId, childIdMap) {
     const mappings = { inputs: [], outputs: [] };
+    const exportTemplateIds = new Set(
+      (blueprint.machines || [])
+        .filter(m => m.type === "export")
+        .map(m => m.blueprintMachineId)
+        .filter(Boolean)
+    );
+
+    function getOutputPortIdxForMaterial(machine, materialId) {
+      if (!machine) return 0;
+      if (machine.type === "purchasing_portal") return 0;
+      if (machine.type === "nursery") return 0;
+      if (machine.type === "machine" && machine.recipeId) {
+        const recipe = AF.core.getRecipeById(machine.recipeId);
+        if (!recipe || !Array.isArray(recipe.outputs)) return 0;
+        const idx = recipe.outputs.findIndex(out => out.materialId === materialId);
+        return idx >= 0 ? idx : 0;
+      }
+      return 0;
+    }
 
     // Map inputs - find which internal machine receives from external input
     blueprint.inputs.forEach((input, idx) => {
@@ -2937,34 +3207,40 @@
 
     // Map outputs - find which internal machine produces external output
     blueprint.outputs.forEach((output, idx) => {
-      // Find internal machines that produce this material but don't output internally
-      const externalOutputMachines = new Set();
+      // Find internal machines that produce this material and either:
+      // - have no internal consumer for it, OR
+      // - feed an Export node (export is treated as external demand for blueprint IO)
+      const exportingMachines = [];
+      const noConsumerMachines = [];
 
       blueprint.machines.forEach(machine => {
         // Check if this machine produces this material
         const producesMaterial = machineProducesMaterial(machine, output.materialId);
         if (!producesMaterial) return;
 
-        // Check if output goes to internal consumer
-        const hasInternalConsumer = blueprint.connections.some(conn =>
+        const outgoingForMaterial = (blueprint.connections || []).filter(conn =>
           conn.fromMachineId === machine.blueprintMachineId &&
-          getMaterialIdForBlueprintConnection(blueprint, conn, 'output') === output.materialId
+          getMaterialIdForBlueprintConnection(blueprint, conn, "output") === output.materialId
         );
 
-        if (!hasInternalConsumer) {
-          externalOutputMachines.add(machine.blueprintMachineId);
-        }
+        const feedsExport = outgoingForMaterial.some(conn => exportTemplateIds.has(conn.toMachineId));
+        const feedsNonExport = outgoingForMaterial.some(conn => !exportTemplateIds.has(conn.toMachineId));
+
+        if (feedsExport) exportingMachines.push(machine.blueprintMachineId);
+        if (!feedsNonExport) noConsumerMachines.push(machine.blueprintMachineId);
       });
 
-      // Use the first machine that produces external output
-      if (externalOutputMachines.size > 0) {
-        const templateId = Array.from(externalOutputMachines)[0];
+      // Prefer mapping outputs to a machine that feeds an Export node (this is the "exported" flow).
+      // Fall back to a machine that has no internal consumer (classic external output).
+      const templateId = exportingMachines[0] || noConsumerMachines[0] || null;
+      if (templateId) {
         const childId = childIdMap.get(templateId);
+        const templateMachine = blueprint.machines.find(m => m.blueprintMachineId === templateId);
         mappings.outputs.push({
           portIdx: idx,
           materialId: output.materialId,
           internalMachineId: childId,
-          internalPortIdx: 0 // Simplified - use first port
+          internalPortIdx: getOutputPortIdxForMaterial(templateMachine, output.materialId)
         });
       }
     });
@@ -3573,8 +3849,6 @@
 
         if (machineKey === "purchasing_portal") {
           machineName = "Purchasing Portal";
-        } else if (machineKey === "fuel_source") {
-          machineName = "Fuel Source";
         } else if (machineKey === "nursery") {
           machineName = "Nursery";
         } else if (machineKey === "unknown") {
@@ -3604,7 +3878,11 @@
         <div class="blueprintCard" data-blueprint-id="${bp.id}" draggable="true">
           <div class="blueprintCard__header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
             <div class="blueprintCard__name">${escapeHtml(bp.name)}</div>
-            <button class="btn btn--danger btn--sm" data-action="blueprint:delete" data-blueprint-delete-id="${bp.id}" title="Delete Blueprint" style="padding: 2px 6px; font-size: 11px;">✕</button>
+            <div style="display:flex; gap: 4px; align-items: center;">
+              <button class="btn btn--sm" data-action="blueprint:add-items-to-canvas" data-blueprint-add-items-id="${bp.id}" title="Add blueprint items to canvas" style="padding: 2px 6px; font-size: 11px;">＋</button>
+              <button class="btn btn--sm" data-action="blueprint:edit-as-copy" data-blueprint-edit-copy-id="${bp.id}" title="Edit blueprint (save as copy)" style="padding: 2px 6px; font-size: 11px;">✎</button>
+              <button class="btn btn--danger btn--sm" data-action="blueprint:delete" data-blueprint-delete-id="${bp.id}" title="Delete Blueprint" style="padding: 2px 6px; font-size: 11px;">✕</button>
+            </div>
           </div>
           ${bp.description ? `<div class="blueprintCard__description">${escapeHtml(bp.description)}</div>` : ''}
           <div class="blueprintCard__stats">
@@ -3643,8 +3921,8 @@
     // Add drag handlers
     listEl.querySelectorAll('.blueprintCard').forEach(card => {
       card.addEventListener('dragstart', (e) => {
-        // Don't start drag if clicking the delete button
-        if (e.target.closest('[data-action="blueprint:delete"]')) {
+        // Don't start drag if clicking action buttons
+        if (e.target.closest('[data-action="blueprint:delete"], [data-action="blueprint:add-items-to-canvas"], [data-action="blueprint:edit-as-copy"]')) {
           e.preventDefault();
           return;
         }
@@ -3654,13 +3932,10 @@
         e.dataTransfer.effectAllowed = 'copy';
       });
 
-      // Prevent delete button from triggering drag
-      const deleteBtn = card.querySelector('[data-action="blueprint:delete"]');
-      if (deleteBtn) {
-        deleteBtn.addEventListener('mousedown', (e) => {
-          e.stopPropagation();
-        });
-      }
+      // Prevent action buttons from triggering drag
+      card.querySelectorAll('[data-action="blueprint:delete"], [data-action="blueprint:add-items-to-canvas"], [data-action="blueprint:edit-as-copy"]').forEach(btn => {
+        btn.addEventListener('mousedown', (e) => e.stopPropagation());
+      });
     });
   }
 
@@ -3722,9 +3997,6 @@
         if (pm.type === "purchasing_portal") {
           const mat = pm.materialId ? AF.core.getMaterialById(pm.materialId) : null;
           name = `Purchasing Portal${mat ? ` (${mat.name})` : ''}`;
-        } else if (pm.type === "fuel_source") {
-          const fuel = pm.fuelId ? AF.core.getMaterialById(pm.fuelId) : null;
-          name = `Fuel Source${fuel ? ` (${fuel.name})` : ''}`;
         } else if (pm.type === "nursery") {
           const plant = pm.plantId ? AF.core.getMaterialById(pm.plantId) : null;
           name = `Nursery${plant ? ` (${plant.name})` : ''}`;
@@ -3753,7 +4025,6 @@
         }
 
         if (pm.type === "purchasing_portal") name = "Purchasing Portal";
-        else if (pm.type === "fuel_source") name = "Fuel Source";
         else if (pm.type === "nursery") {
           const plant = pm.plantId ? AF.core.getMaterialById(pm.plantId) : null;
           name = `Nursery${plant ? ` (${plant.name})` : ''}`;
@@ -4246,7 +4517,7 @@
     placeBlueprintOnCanvas(blueprint.id, centerX - 150, centerY - 100);
 
     // Get the newly created blueprint instance (it's the last one added)
-    const blueprintInstance = AF.state.build.placedMachines[state.build.placedMachines.length - 1];
+    const blueprintInstance = AF.state.build.placedMachines[AF.state.build.placedMachines.length - 1];
 
     // Try to reconnect external connections to blueprint ports
     reconnectExternalConnectionsToBlueprint(externalConnections, blueprintInstance, selectedSet);
@@ -4466,7 +4737,7 @@
     const { instanceId } = AF.state.currentBlueprintEdit;
 
     // Get the parent canvas state (where the instance lives)
-    const parentState = AF.state.blueprintEditStack[state.blueprintEditStack.length - 1];
+    const parentState = AF.state.blueprintEditStack[AF.state.blueprintEditStack.length - 1];
     if (!parentState) {
       setStatus("Parent canvas state not found.", "error");
       return;
@@ -4556,6 +4827,11 @@
   async function saveBlueprintEdit() {
     if (!AF.state.currentBlueprintEdit) {
       setStatus("Not currently editing a blueprint.", "error");
+      return;
+    }
+
+    if (AF.state.currentBlueprintEdit.forceSaveAsNew) {
+      await saveBlueprintAsNew();
       return;
     }
 
@@ -4785,21 +5061,23 @@
     AF.core.saveDb();
     AF.render?.renderBlueprintsList?.();
 
-    // Ask if user wants to update the current instance to use the new blueprint
-    if (await AF.ui.dialog.confirm(`Update the edited instance to use the new blueprint "${newName}"?`, { title: "Update instance" })) {
-      const parentState = AF.state.blueprintEditStack[state.blueprintEditStack.length - 1];
-      if (parentState) {
-        const instance = parentState.placedMachines.find(pm => pm.id === AF.state.currentBlueprintEdit.instanceId);
-        if (instance) {
-          instance.blueprintId = newBlueprint.id;
-          instance.blueprintData = {
-            name: newBlueprint.name,
-            description: newBlueprint.description,
-            inputs: newBlueprint.inputs,
-            outputs: newBlueprint.outputs,
-            machines: newBlueprint.machines,
-            connections: newBlueprint.connections,
-          };
+    // Ask if user wants to update the edited instance to use the new blueprint (only if editing an instance)
+    if (AF.state.currentBlueprintEdit.instanceId) {
+      if (await AF.ui.dialog.confirm(`Update the edited instance to use the new blueprint "${newName}"?`, { title: "Update instance" })) {
+        const parentState = AF.state.blueprintEditStack[state.blueprintEditStack.length - 1];
+        if (parentState) {
+          const instance = parentState.placedMachines.find(pm => pm.id === AF.state.currentBlueprintEdit.instanceId);
+          if (instance) {
+            instance.blueprintId = newBlueprint.id;
+            instance.blueprintData = {
+              name: newBlueprint.name,
+              description: newBlueprint.description,
+              inputs: newBlueprint.inputs,
+              outputs: newBlueprint.outputs,
+              machines: newBlueprint.machines,
+              connections: newBlueprint.connections,
+            };
+          }
         }
       }
     }

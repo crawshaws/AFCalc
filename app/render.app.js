@@ -28,24 +28,27 @@
     
     if (AF.state.currentBlueprintEdit) {
       const detached = AF.state.currentBlueprintEdit.detached || false;
+      const forceSaveAsNew = !!AF.state.currentBlueprintEdit.forceSaveAsNew;
       const blueprint = AF.state.currentBlueprintEdit.blueprintId
         ? AF.state.db.blueprints.find(bp => bp.id === AF.state.currentBlueprintEdit.blueprintId)
         : null;
       const blueprintName = blueprint ? blueprint.name : (detached ? "Detached Blueprint" : "Unknown");
       const depth = AF.state.blueprintEditStack.length;
       
-      // Different buttons based on detached state
-      const saveButtons = detached 
-        ? `<button class="btn btn--sm" data-action="blueprint:save-to-instance" title="Save changes to this instance only">💾 Save to Instance</button>`
-        : `<button class="btn btn--sm" data-action="blueprint:save-edit" title="Save to blueprint (updates all instances)">💾 Save to Blueprint</button>
-           <button class="btn btn--sm" data-action="blueprint:save-to-instance" title="Save to instance only (detaches from blueprint)">📌 Save to Instance Only</button>`;
+      // Different buttons based on edit mode
+      const saveButtons = forceSaveAsNew
+        ? `<button class="btn btn--sm" data-action="blueprint:save-edit" title="Save as a new blueprint copy">💾 Save Copy</button>`
+        : detached
+          ? `<button class="btn btn--sm" data-action="blueprint:save-to-instance" title="Save changes to this instance only">💾 Save to Instance</button>`
+          : `<button class="btn btn--sm" data-action="blueprint:save-edit" title="Save to blueprint (updates all instances)">💾 Save to Blueprint</button>
+             <button class="btn btn--sm" data-action="blueprint:save-to-instance" title="Save to instance only (detaches from blueprint)">📌 Save to Instance Only</button>`;
       
       subtitle.innerHTML = `
-        <span style="color: var(--accent); font-weight: bold;">📐 EDITING: ${escapeHtml(blueprintName)}</span>
+        <span style="color: var(--accent); font-weight: bold;">📐 ${forceSaveAsNew ? "EDITING COPY" : "EDITING"}: ${escapeHtml(blueprintName)}</span>
         ${detached ? `<span style="color: var(--warning);"> (DETACHED)</span>` : ""}
         ${depth > 1 ? `<span style="color: var(--muted);"> (Depth: ${depth})</span>` : ""}
         ${saveButtons}
-        <button class="btn btn--sm" data-action="blueprint:save-as-new" title="Save as new blueprint">📋 Save As New</button>
+        ${forceSaveAsNew ? "" : `<button class="btn btn--sm" data-action="blueprint:save-as-new" title="Save as new blueprint">📋 Save As New</button>`}
         <button class="btn btn--sm" data-action="blueprint:exit-edit" title="Exit without saving">❌ Exit</button>
       `;
     } else {
@@ -319,7 +322,7 @@
       
       if (usePhysicalModel) {
         // New physical instance model - calculate rates from child machines
-        actualMachineCount = placedMachine.childMachines.length;
+        actualMachineCount = placedMachine.childMachines.filter(m => m.type !== "export").length;
         
         // Build inputs from port mappings - rates include child machine efficiency
         bpInputs = (placedMachine.portMappings?.inputs || []).map(mapping => {
@@ -333,11 +336,37 @@
           return { materialId: mapping.materialId, rate: actualRate };
         });
         
-        // Build outputs from port mappings - rates include child machine efficiency
+        // Build outputs from port mappings.
+        // Default behavior: show max output at current child efficiency.
+        // Special case: if this mapped port feeds one or more internal Export nodes, show the
+        // *actual exported flow* (sum of distributed connection rates into Export) instead.
         bpOutputs = (placedMachine.portMappings?.outputs || []).map(mapping => {
           const childMachine = placedMachine.childMachines.find(m => m.id === mapping.internalMachineId);
           if (!childMachine) return { materialId: mapping.materialId, rate: 0 };
-          
+
+          const exportChildIds = new Set(
+            (placedMachine.childMachines || []).filter(m => m.type === "export").map(m => m.id)
+          );
+
+          let exportedRate = 0;
+          if (exportChildIds.size > 0 && Array.isArray(placedMachine.childConnections)) {
+            placedMachine.childConnections.forEach(c => {
+              const fromId = c._resolvedFromMachineId || c.fromMachineId;
+              const fromPortIdx = c._resolvedFromPortIdx !== undefined ? c._resolvedFromPortIdx : c.fromPortIdx;
+              const toId = c._resolvedToMachineId || c.toMachineId;
+
+              if (fromId !== childMachine.id) return;
+              if (String(fromPortIdx) !== String(mapping.internalPortIdx)) return;
+              if (!exportChildIds.has(toId)) return;
+
+              exportedRate += (c.actualRate ?? 0);
+            });
+          }
+
+          if (exportedRate > 0.0001) {
+            return { materialId: mapping.materialId, rate: exportedRate };
+          }
+
           const key = `${childMachine.id}::${String(mapping.internalPortIdx)}`;
           const maxRate = AF.state.calc?.port?.outputRate?.get(key) ?? 0;
           const childEfficiency = childMachine.efficiency !== undefined ? childMachine.efficiency : 1.0;
@@ -601,60 +630,77 @@
       
       return el;
     }
-    
-    // Fuel Source type
-    if (type === "fuel_source") {
-      const ui = AF.state.calc?.uiByMachineId?.get?.(placedMachine.id);
-      const fuelId = ui && ui.kind === "fuel_source" ? ui.fuelId : (placedMachine.fuelId || null);
-      const fuel = fuelId ? AF.core.getMaterialById(fuelId) : null;
-      const totalConsumptionP = ui && ui.kind === "fuel_source" ? (ui.totalConsumptionP || 0) : 0;
-      const fuelRate = ui && ui.kind === "fuel_source" ? (ui.fuelRate || 0) : 0;
-      const secondsPerFuel = ui && ui.kind === "fuel_source" ? ui.secondsPerFuel : null;
-      
-      // Fuel selector (only show fuels)
-      const fuelOptions = AF.state.db.materials
-        .filter(m => m.isFuel)
-        .map(m => {
-          const p = AF.state.calc?.fuelHeatValueByMaterialId?.get?.(m.id) ?? (m.fuelValue ?? 0);
-          return `<option value="${m.id}" ${m.id === fuelId ? 'selected' : ''}>${escapeHtml(m.name)} (${p}P)</option>`;
-        })
-        .join("");
-      
-      const outputsHTML = `
-        <div class="buildPort buildPort--output" data-output-port="0" title="${fuel ? fuel.name : 'Select fuel'} - ${fuelRate.toFixed(2)}/min">
-          <div class="buildPort__label">${fuel ? escapeHtml(fuel.name) : 'Select'}</div>
-          <div class="buildPort__rate">${fuelRate.toFixed(2)}/min</div>
+
+    // Export node (placeable sink) - accepts any number of incoming connections (any materials)
+    if (type === "export") {
+      // Collect incoming connections and group by material
+      const incoming = AF.state.build.connections.filter(c => c.toMachineId === placedMachine.id);
+      const byMaterial = new Map(); // materialId -> totalRate
+
+      incoming.forEach(c => {
+        const fromId = c._resolvedFromMachineId || c.fromMachineId;
+        const fromPortIdx = c._resolvedFromPortIdx !== undefined ? c._resolvedFromPortIdx : c.fromPortIdx;
+        const key = `${fromId}::${String(fromPortIdx)}`;
+        const matId = AF.state.calc?.port?.outputMaterial?.get?.(key) ?? null;
+        const rate = c.actualRate ?? 0;
+        if (!matId) return;
+        byMaterial.set(matId, (byMaterial.get(matId) || 0) + rate);
+      });
+
+      const listHtml = byMaterial.size === 0
+        ? '<div class="hint" style="margin: 0;">Connect outputs here to export surplus.</div>'
+        : Array.from(byMaterial.entries())
+          .sort((a, b) => {
+            const ma = AF.core.getMaterialById(a[0])?.name || "";
+            const mb = AF.core.getMaterialById(b[0])?.name || "";
+            return ma.localeCompare(mb);
+          })
+          .map(([materialId, rate]) => {
+            const m = AF.core.getMaterialById(materialId);
+            const name = m ? m.name : materialId;
+            return `
+              <div class="storageInventory__item" style="padding: 8px 10px;">
+                <div class="storageInventory__material">${escapeHtml(name)}</div>
+                <div class="storageInventory__status">${Number(rate).toFixed(2)}/min</div>
+              </div>
+            `;
+          }).join("");
+
+      const totalRate = Array.from(byMaterial.values()).reduce((s, v) => s + v, 0);
+
+      const inputsHTML = `
+        <div class="buildPort buildPort--input" data-input-port="0" title="Export (multi-material)">
           <div class="buildPort__dot"></div>
+          <div class="buildPort__label">Export</div>
+          <div class="buildPort__rate">${Number(totalRate).toFixed(2)}/min</div>
         </div>
       `;
-      
+
       el.innerHTML = `
         <div class="buildMachine__header">
-          <div class="buildMachine__title">Fuel Source</div>
+          <div class="buildMachine__title">Export</div>
           <div style="display: flex; gap: 4px;">
             <button class="btn btn--sm" data-action="build:clone-machine" title="Clone">📋</button>
             <button class="btn btn--danger btn--sm" data-action="build:delete-machine" title="Remove">✕</button>
           </div>
         </div>
         <div class="buildMachine__body">
-          <label style="font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px;">Fuel Type</label>
-          <select class="buildMachine__recipeSelect" data-fuel-material-select>
-            <option value="">(select fuel)</option>
-            ${fuelOptions}
-          </select>
-          <div class="hint" style="margin-top: 6px;">
-            ${totalConsumptionP > 0 ? `Feeding ${totalConsumptionP.toFixed(1)}P/s consumption.` : 'Connect to heating devices.'}
-            ${fuel && totalConsumptionP > 0 && secondsPerFuel != null ? `<br>Each ${fuel.name} lasts ${secondsPerFuel.toFixed(1)}s` : ''}
+          <div class="hint" style="margin-top: 0;">
+            Acts as an infinite sink. Useful for exporting surplus in cyclical/self-fed systems.
+          </div>
+          <div class="storageInventory" style="margin-top: 8px;">
+            <div class="storageInventory__title">Incoming (${byMaterial.size})</div>
+            ${listHtml}
           </div>
         </div>
         <div class="buildMachine__ports">
           <div class="buildMachine__portGroup">
-            <div class="buildMachine__portLabel">Output</div>
-            ${outputsHTML}
+            <div class="buildMachine__portLabel">Input</div>
+            ${inputsHTML}
           </div>
         </div>
       `;
-      
+
       return el;
     }
     
@@ -1024,7 +1070,7 @@
         } else if (status && status.mode === "invalid") {
           fuelInfoHTML = `
               <div style="margin-bottom: 8px; padding: 8px; background: rgba(255,165,0,.1); border: 1px solid rgba(255,165,0,.3); border-radius: 8px;">
-                <div style="font-size: 11px; color: var(--muted);">⚠️ Connected input is not a fuel source</div>
+                <div style="font-size: 11px; color: var(--muted);">⚠️ Connected input is not a valid fuel</div>
               </div>
             `;
         }
@@ -1618,13 +1664,14 @@
       const polyline = document.createElementNS(svgNS, "polyline");
       polyline.setAttribute("points", points);
       polyline.setAttribute("fill", "none");
-      polyline.setAttribute("stroke-dasharray", "5,5");
       polyline.setAttribute("data-connection-id", conn.id);
       polyline.style.cursor = "pointer";
       polyline.style.pointerEvents = "auto"; // Enable clicks on polyline
       polyline.style.strokeLinejoin = "round"; // Smoother corners
+      polyline.style.strokeLinecap = "round";
       
-      // Make it easier to click by adding invisible wider stroke
+      // Make it easier to click:
+      // - Use a SOLID (non-dashed) invisible stroke so the dash gaps don't create click-through holes
       polyline.setAttribute("stroke-width", "10");
       
       // Create visible stroke on top
@@ -1634,6 +1681,7 @@
       visiblePolyline.setAttribute("stroke-dasharray", "5,5");
       visiblePolyline.style.pointerEvents = "none";
       visiblePolyline.style.strokeLinejoin = "round";
+      visiblePolyline.style.strokeLinecap = "round";
       
       // Check if connection is insufficient
       const sourcePlacedMachine = AF.state.build.placedMachines.find(pm => pm.id === conn.fromMachineId);

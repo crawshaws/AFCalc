@@ -220,6 +220,34 @@
     AF.ui.setStatus("Exported full state (database + build + skills).");
   }
 
+  /**
+   * Export build only (canvas state) for sharing/debugging.
+   * This is intentionally compact and importable.
+   */
+  function exportBuildState() {
+    const buildState = {
+      version: 1,
+      kind: "af_build_v1",
+      build: {
+        placedMachines: state.build.placedMachines,
+        connections: state.build.connections,
+        camera: state.build.camera,
+      },
+    };
+
+    const content = JSON.stringify(buildState, null, 2);
+    const blob = new Blob([content], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `alchemy-factory-build-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    AF.ui.setStatus("Exported build (canvas only).");
+  }
+
      
   /**
    * Import full state with validation
@@ -444,8 +472,11 @@
           if (pm.type === "purchasing_portal") {
             normalized.materialId = pm.materialId || null;
           }
+          // Legacy compat: Fuel Source node was removed. Convert to Purchasing Portal (fuelId -> materialId).
           if (pm.type === "fuel_source") {
-            normalized.fuelId = pm.fuelId || null;
+            normalized.type = "purchasing_portal";
+            normalized.materialId = pm.fuelId || null;
+            delete normalized.fuelId;
           }
           if (pm.type === "nursery") {
             normalized.plantId = pm.plantId || null;
@@ -567,6 +598,7 @@
     clearDb,
     exportDb,
     exportFullState,
+    exportBuildState,
     importFullState,
     saveBuild,
     loadBuild,
@@ -882,10 +914,6 @@
       return placedMachine.materialId;
     }
 
-    if (placedMachine.type === "fuel_source") {
-      return placedMachine.fuelId;
-    }
-
     if (placedMachine.type === "nursery") {
       if (type === "output") {
         return placedMachine.plantId;
@@ -1122,8 +1150,8 @@
 
     // Allow modules to set up internal wiring after state is ready
     AF.calculator.init();
-    AF.render.init();
     AF.ui.init();
+    AF.render.init();
     // Initial calculation + render (coalesced)
     AF.scheduler.flushNow();
 

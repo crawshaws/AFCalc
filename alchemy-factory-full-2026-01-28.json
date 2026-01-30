@@ -1083,37 +1083,6 @@
   "build": {
     "placedMachines": [
       {
-        "id": "pm_19c0a142e53_7caed5ee9543f",
-        "type": "machine",
-        "machineId": "mac_19bf98b8ed3_5d99f8c212c238",
-        "recipeId": null,
-        "count": 1,
-        "x": -92.5,
-        "y": -504,
-        "toppers": [
-          {
-            "machineId": "mac_19be8331193_f48f5d5c24a51",
-            "recipeId": "rec_19be84c4901_2bd0e82522ed5"
-          },
-          {
-            "machineId": "mac_19be8331193_f48f5d5c24a51",
-            "recipeId": "rec_19be84c4901_2bd0e82522ed5"
-          },
-          {
-            "machineId": "mac_19be8331193_f48f5d5c24a51",
-            "recipeId": "rec_19be84c4901_2bd0e82522ed5"
-          }
-        ],
-        "previewFuelId": "mat_19be821c709_aecec32eef4d8",
-        "efficiency": 0.30092592592592593,
-        "actualInputRates": {},
-        "actualOutputRates": {},
-        "hasInsufficientInputs": false,
-        "storageSlots": null,
-        "inventories": [],
-        "manualInventories": []
-      },
-      {
         "id": "pm_19c0a2a4b11_7c1c1491aaf31",
         "type": "purchasing_portal",
         "machineId": null,
@@ -1138,17 +1107,50 @@
         "efficiency": 0.22569444444444445,
         "actualInputRates": {},
         "actualOutputRates": {},
+        "hasInsufficientInputs": false,
+        "storageSlots": null,
+        "inventories": [],
+        "manualInventories": [],
+        "toppers": [],
+        "previewFuelId": null
+      },
+      {
+        "id": "pm_19c0a362e2b_d6c9622fc3a28",
+        "type": "machine",
+        "machineId": "mac_19bf98b8ed3_5d99f8c212c238",
+        "recipeId": null,
+        "count": 1,
+        "x": -235,
+        "y": -570,
+        "toppers": [
+          {
+            "machineId": "mac_19be8331193_f48f5d5c24a51",
+            "recipeId": "rec_19be84c4901_2bd0e82522ed5"
+          },
+          {
+            "machineId": "mac_19be8331193_f48f5d5c24a51",
+            "recipeId": "rec_19be84c4901_2bd0e82522ed5"
+          },
+          {
+            "machineId": "mac_19be8331193_f48f5d5c24a51",
+            "recipeId": "rec_19be84c4901_2bd0e82522ed5"
+          }
+        ],
+        "previewFuelId": null,
+        "efficiency": 0.30092592592592593,
+        "actualInputRates": {},
+        "actualOutputRates": {},
         "hasInsufficientInputs": false
       },
       {
-        "id": "pm_19c0a2ac2ad_54844b022d60d",
+        "id": "pm_19c0a366d71_b24b334b8c6ff8",
         "type": "machine",
         "machineId": "mac_19be8238f43_5615225db5c7b8",
         "recipeId": "rec_19be877a9d3_e79989d4b08b68",
-        "count": 3,
-        "x": 445,
-        "y": 103,
-        "efficiency": 0.30092592592592593,
+        "count": 1,
+        "x": 380,
+        "y": -270,
+        "efficiency": 0.9027777777777779,
         "actualInputRates": {},
         "actualOutputRates": {},
         "hasInsufficientInputs": false
@@ -1162,39 +1164,39 @@
         "toMachineId": "pm_19c0a2a6b27_9133ebdb61ffd8",
         "toPortIdx": "0",
         "actualRate": 0.06770833333333333,
-        "lastCalculated": 1769697133868
+        "lastCalculated": 1769697875926
       },
       {
-        "id": "conn_19c0a2aa34a_a3a442ef8b3c48",
+        "id": "conn_19c0a3664fa_da4e43bc24d4b",
         "fromMachineId": "pm_19c0a2a6b27_9133ebdb61ffd8",
         "fromPortIdx": "0",
-        "toMachineId": "pm_19c0a142e53_7caed5ee9543f",
+        "toMachineId": "pm_19c0a362e2b_d6c9622fc3a28",
         "toPortIdx": "grouped-input-mat_19be82124b0_0ac30d451be348",
         "actualRate": 13.541666666666666,
-        "lastCalculated": 1769697133868
+        "lastCalculated": 1769697875926
       },
       {
-        "id": "conn_19c0a2b1e0d_d1802048bfe0d",
-        "fromMachineId": "pm_19c0a142e53_7caed5ee9543f",
+        "id": "conn_19c0a36867b_f550df8e3937f",
+        "fromMachineId": "pm_19c0a362e2b_d6c9622fc3a28",
         "fromPortIdx": "grouped-output-mat_19be8217b17_337a74790e45e8",
-        "toMachineId": "pm_19c0a2ac2ad_54844b022d60d",
+        "toMachineId": "pm_19c0a366d71_b24b334b8c6ff8",
         "toPortIdx": "0",
         "actualRate": 13.541666666666666,
-        "lastCalculated": 1769697133868
+        "lastCalculated": 1769697875926
       },
       {
-        "id": "conn_19c0a2b4529_13a7e928a6eb08",
-        "fromMachineId": "pm_19c0a2ac2ad_54844b022d60d",
+        "id": "conn_19c0a3697d4_53e25fa34885e8",
+        "fromMachineId": "pm_19c0a366d71_b24b334b8c6ff8",
         "fromPortIdx": "0",
-        "toMachineId": "pm_19c0a142e53_7caed5ee9543f",
+        "toMachineId": "pm_19c0a362e2b_d6c9622fc3a28",
         "toPortIdx": "fuel",
         "actualRate": 4.075038580246914,
-        "lastCalculated": 1769697133868
+        "lastCalculated": 1769697875926
       }
     ],
     "camera": {
-      "x": -19,
-      "y": -72,
+      "x": 58,
+      "y": -200,
       "zoom": 1
     }
   },

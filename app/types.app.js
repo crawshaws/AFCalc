@@ -129,7 +129,7 @@
  */
 
 /**
- * @typedef {"machine"|"purchasing_portal"|"fuel_source"|"nursery"|"storage"|"blueprint"|"blueprint_instance"|"virtual_sink"|"virtual_source"} PlacedMachineType
+ * @typedef {"machine"|"purchasing_portal"|"nursery"|"storage"|"export"|"blueprint"|"blueprint_instance"|"virtual_sink"|"virtual_source"} PlacedMachineType
  */
 
 /**
@@ -149,7 +149,6 @@
  *
  *   // Portal/source types
  *   materialId: (string|null|undefined),
- *   fuelId: (string|null|undefined),
  *   plantId: (string|null|undefined),
  *   fertilizerId: (string|null|undefined),
  *
@@ -310,12 +309,34 @@
 
 /**
  * @typedef {{
+ *   placedMachines: Array<PlacedMachine>,
+ *   connections: Array<Connection>,
+ *   camera: CameraState,
+ *   selectedMachines: Array<string>,
+ *   editContext: (BlueprintEditContext|null),
+ * }} BlueprintEditStackFrame
+ */
+
+/**
+ * @typedef {{
+ *   instanceId: (string|null),
+ *   blueprintId: (string|null),
+ *   detached: boolean,
+ *   originalBlueprint: (Blueprint|null),
+ *   childIdMap: (Map<any, any>|null),
+ *   forceSaveAsNew: (boolean|undefined),
+ *   startedFromSidebar: (boolean|undefined),
+ * }} BlueprintEditContext
+ */
+
+/**
+ * @typedef {{
  *   db: Db,
  *   calc: CalcState,
  *   ui: UIState,
  *   build: BuildState,
- *   blueprintEditStack: Array<Object>,
- *   currentBlueprintEdit: (Object|null),
+ *   blueprintEditStack: Array<BlueprintEditStackFrame>,
+ *   currentBlueprintEdit: (BlueprintEditContext|null),
  *   blueprintMachineCountCache: Object,
  *   skills: SkillsState,
  * }} AppState
@@ -367,6 +388,7 @@
  *   clearDb: () => void,
  *   exportDb: () => void,
  *   exportFullState: () => void,
+ *   exportBuildState: () => void,
  *   importFullState: (file: File) => Promise<Array<ValidationIssue>>,
  *   saveBuild: () => void,
  *   loadBuild: () => { placedMachines: Array<PlacedMachine>, connections: Array<Connection>, camera: CameraState },

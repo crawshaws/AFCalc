@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "kind": "af_build_v1",
+  "build": {
+    "placedMachines": [
+      {
+        "id": "pm_19c0ab2356e_8abd6056a6e2",
+        "type": "machine",
+        "machineId": "mac_19be82240fe_a2ed8c7eb2ebb",
+        "recipeId": "rec_19be8486b23_e014045a9c80e8",
+        "count": 2,
+        "x": -446,
+        "y": -495,
+        "efficiency": 0.75,
+        "actualInputRates": {},
+        "actualOutputRates": {},
+        "hasInsufficientInputs": false
+      },
+      {
+        "id": "pm_19c0ab24c00_c9ac9bf0b05df",
+        "type": "purchasing_portal",
+        "machineId": null,
+        "recipeId": null,
+        "count": 1,
+        "materialId": "mat_19be820b99d_053e5c3443235",
+        "x": -961,
+        "y": -503,
+        "efficiency": 0.0024999999999999996,
+        "actualInputRates": {},
+        "actualOutputRates": {},
+        "hasInsufficientInputs": false
+      },
+      {
+        "id": "pm_19c0ab2c12a_9917002bbbab6",
+        "type": "machine",
+        "machineId": "mac_19be8238f43_5615225db5c7b8",
+        "recipeId": "rec_19be855cf03_1b466cf5600ec8",
+        "count": 4,
+        "x": 85,
+        "y": -594,
+        "efficiency": 1,
+        "actualInputRates": {},
+        "actualOutputRates": {},
+        "hasInsufficientInputs": false
+      },
+      {
+        "id": "pm_19c0ab35165_e5f56174fe92f",
+        "type": "machine",
+        "machineId": "mac_19bf98b8ed3_5d99f8c212c238",
+        "recipeId": null,
+        "count": 2,
+        "x": 401,
+        "y": -198,
+        "toppers": [],
+        "previewFuelId": null,
+        "efficiency": 1,
+        "actualInputRates": {},
+        "actualOutputRates": {},
+        "hasInsufficientInputs": false
+      }
+    ],
+    "connections": [
+      {
+        "id": "conn_19c0ab25c5b_2ce5444ba44fa",
+        "fromMachineId": "pm_19c0ab24c00_c9ac9bf0b05df",
+        "fromPortIdx": "0",
+        "toMachineId": "pm_19c0ab2356e_8abd6056a6e2",
+        "toPortIdx": "0",
+        "actualRate": 0.22499999999999998,
+        "lastCalculated": 1769706076306
+      },
+      {
+        "id": "conn_19c0ab2e008_268d4272e5a6c8",
+        "fromMachineId": "pm_19c0ab2356e_8abd6056a6e2",
+        "fromPortIdx": "0",
+        "toMachineId": "pm_19c0ab2c12a_9917002bbbab6",
+        "toPortIdx": "0",
+        "actualRate": 40,
+        "lastCalculated": 1769706076306
+      },
+      {
+        "id": "conn_19c0ab37b74_ff8d9c7f4bac98",
+        "fromMachineId": "pm_19c0ab2356e_8abd6056a6e2",
+        "fromPortIdx": "0",
+        "toMachineId": "pm_19c0ab35165_e5f56174fe92f",
+        "toPortIdx": "fuel",
+        "actualRate": 5,
+        "lastCalculated": 1769706076306
+      }
+    ],
+    "camera": {
+      "x": -96,
+      "y": -94,
+      "zoom": 1
+    }
+  }
+}

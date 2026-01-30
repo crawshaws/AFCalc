@@ -140,17 +140,23 @@ function formatTimeMinutes(minutes) {
  * @returns {string} Formatted string like "1g 50s 500c"
  */
 function formatCoins(copper) {
-  if (copper === 0) return "0c";
+  if (!Number.isFinite(copper)) return "—";
 
-  const gold = Math.floor(copper / 100000); // 100 silver * 1000 copper
-  const remainingAfterGold = copper % 100000;
+  // Costs are often derived from fractional rates, so floating point error is common
+  // (e.g. 44.999999999). Round to nearest copper for display.
+  const sign = copper < 0 ? "-" : "";
+  const total = Math.round(Math.abs(copper));
+  if (total === 0) return "0c";
+
+  const gold = Math.floor(total / 100000); // 100 silver * 1000 copper
+  const remainingAfterGold = total % 100000;
   const silver = Math.floor(remainingAfterGold / 1000);
-  const remainingCopper = Math.floor(remainingAfterGold % 1000);
+  const remainingCopper = remainingAfterGold % 1000;
 
   const parts = [];
   if (gold > 0) parts.push(`${gold}g`);
   if (silver > 0) parts.push(`${silver}s`);
   if (remainingCopper > 0 || parts.length === 0) parts.push(`${remainingCopper}c`);
 
-  return parts.join(' ');
+  return sign + parts.join(' ');
 }

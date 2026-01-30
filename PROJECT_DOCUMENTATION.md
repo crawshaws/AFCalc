@@ -300,6 +300,7 @@ netProduction[materialId] = totalOutput[materialId] - totalInput[materialId]
   - Add Machine (blank card with machine selector)
   - Add Storage
   - Add Purchasing Portal
+  - Add Export
 - Header:
   - Title and conveyor speed display
   - "📊 Production Summary" button
@@ -382,6 +383,15 @@ The UI layer provides a theme-consistent dialog service at `AF.ui.dialog` which 
 - `AF.ui.dialog.prompt(message, defaultValue?, opts?)` → `Promise<string|null>`
 - `AF.ui.dialog.open(opts)` → dialog builder for custom content/buttons
 
+### Export Node (placeable sink)
+
+For cyclical/self-fed layouts where a machine has real outgoing connections but still produces *surplus*, you can add an **Export** node on the canvas and connect surplus-producing outputs into it.
+
+- The Export node is a **placeable infinite sink** (like the virtual sink used for unconnected outputs)
+- It has a single **multi-material input** that accepts multiple incoming connections
+- Any flow into Export is counted as **Exports** in the production summary (using the actual distributed connection rates)
+- **Blueprints**: When creating a blueprint, connections that feed an Export node are treated as **blueprint outputs** (per material). Export nodes are kept inside the blueprint as virtual sinks, but they are not shown/count as machines in blueprint UI.
+
 ### LocalStorage Keys
 
 | Key | Content | Format |
@@ -395,6 +405,7 @@ The UI layer provides a theme-consistent dialog service at `AF.ui.dialog` which 
 **Export:**
 - `File → Export JSON` downloads `af_planner_db_v1` as a JSON file
 - Filename format: `alchemy-factory-db-{timestamp}.json`
+- `File → Export Build (Canvas Only)` downloads a compact, importable JSON containing only the canvas build (placed machines, connections, camera)
 
 **Import:**
 - `File → Import JSON` loads database from JSON file
@@ -582,3 +593,12 @@ Purchasing portals (and other source machines) displayed efficiency badges showi
 *Document Version: 1.1*  
 *Last Updated: 2026-01-29*  
 *Project Status: Core features complete, ready for enhancement*
+
+---
+
+## Blueprint Sidebar Enhancements (2026-01-29)
+
+In the **Blueprints** side panel, each blueprint entry now has extra action buttons:
+
+- **Add items to canvas (＋)**: Adds the blueprint's internal machines/connections directly onto the main canvas as new, normal items (no blueprint container card is placed). Nested blueprint instances are expanded when possible using stored `portMappings`.
+- **Edit as copy (✎)**: Opens the blueprint editor preloaded with that blueprint, but **Save** creates a new blueprint copy (the original blueprint is not modified).
