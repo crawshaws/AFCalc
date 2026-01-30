@@ -302,7 +302,10 @@ netProduction[materialId] = totalOutput[materialId] - totalInput[materialId]
   - Add Purchasing Portal
   - Add Export
 - Header:
-  - Title and conveyor speed display
+  - Workspace tab bar (multiple independent production workspaces)
+  - Title shows active workspace name and includes a rename button (renames the tab)
+  - Tabs have a close (✕) button with confirmation prompt
+  - Conveyor speed display
   - "📊 Production Summary" button
 
 **Machine Interaction:**
@@ -391,13 +394,18 @@ For cyclical/self-fed layouts where a machine has real outgoing connections but 
 - It has a single **multi-material input** that accepts multiple incoming connections
 - Any flow into Export is counted as **Exports** in the production summary (using the actual distributed connection rates)
 - **Blueprints**: When creating a blueprint, connections that feed an Export node are treated as **blueprint outputs** (per material). Export nodes are kept inside the blueprint as virtual sinks, but they are not shown/count as machines in blueprint UI.
+- **Blueprints (Fuel port)**: If the selection includes a heating device (furnace) whose **Fuel** input is **unconnected**, blueprint creation adds a special **Fuel** input port to the blueprint and maps it to the internal furnace Fuel port. This port is only added when the internal Fuel port is disconnected.
+- **Blueprint calculation parity**: For any connection that crosses a blueprint boundary, the calculator uses the resolved child endpoints (`_resolvedFrom*` / `_resolvedTo*`) so blueprints behave identically to an “exploded” view of their internal machines.
+  - When multiple sinks exist for the same output port (e.g. an internal Export node inside the blueprint *and* an external Export node on the canvas), surplus is routed to **external sinks first** to avoid splitting surplus across internal/external export sinks.
+- **Blueprint card outputs (capacity-only)**: Blueprint output ports display **net export capacity** (green: max output minus any mandatory internal consumption) and show **external consumption** as a separate red `-X/min` value. Internal backpressure/underclocking still runs on the child machines as normal.
 
 ### LocalStorage Keys
 
 | Key | Content | Format |
 |-----|---------|--------|
 | `af_planner_db_v1` | Materials, machines, recipes | JSON |
-| `af_planner_build_v1` | Canvas state (placed machines, connections) | JSON |
+| `af_planner_workspaces_v1` | Production workspaces (tabs) + per-tab canvas state | JSON |
+| `af_planner_build_v1` | **Legacy mirror** of the active workspace build (backward compatibility) | JSON |
 | `af_planner_skills_v1` | Skill point allocations | JSON |
 
 ### Import/Export
@@ -405,12 +413,16 @@ For cyclical/self-fed layouts where a machine has real outgoing connections but 
 **Export:**
 - `File → Export JSON` downloads `af_planner_db_v1` as a JSON file
 - Filename format: `alchemy-factory-db-{timestamp}.json`
-- `File → Export Build (Canvas Only)` downloads a compact, importable JSON containing only the canvas build (placed machines, connections, camera)
+- `File → Save Production` downloads a compact, importable JSON containing **only the active workspace build** (placed machines, connections, camera) and includes the workspace `name`
 
 **Import:**
 - `File → Import JSON` loads database from JSON file
 - Validates structure and migrates old data formats
 - Does NOT import build canvas or skills (only database)
+- `File → Load Production…` loads a previously exported **build/canvas** JSON (`af_build_v1`) into a **NEW workspace tab**
+  - Keeps the current database/skills intact
+  - Switches to the new tab automatically
+  - If the build contains blueprint instances, their `blueprintData` is used to automatically add missing entries to the local blueprint collection (`db.blueprints`)
 
 **Clear Functions:**
 - `File → New (clear local data)` - Clears database only
@@ -588,10 +600,65 @@ Purchasing portals (and other source machines) displayed efficiency badges showi
 
 **Fix:** Removed efficiency badges and underclocking warnings from purchasing portal cards (lines 5848-5867). Source machines now never show efficiency indicators, as their scaling behavior is by design, not a performance issue.
 
+### Heating Device Fuel + Topper Rates Underclocking (2026-01-30)
+
+Heating device (furnace) cards could show incorrect **required fuel** / **fuel shortage** and incorrect grouped topper input/output port rates when the furnace was underclocked due to downstream demand (common in self-fueled setups).
+
+- **Root cause**: The heating-device UI snapshot computed fuel required rate and grouped topper rates at 100% capacity, without scaling by the heating device’s settled utilization (`placedMachine.efficiency`).
+- **Fix**: Scale the displayed required fuel items/min and grouped topper input/output rates by `placedMachine.efficiency`, while keeping `totalHeatP` as the 100% design heat load for display.
+
+### Blueprint-Internal Export Nodes Are Metadata-Only (2026-01-30)
+
+Export nodes placed **inside a blueprint container** are used only to help define what the blueprint can export; they must not act as infinite sinks in live factory calculations.
+
+- **Rule**: Only **top-level** Export nodes on the main canvas participate in flow distribution and Production Summary exports.
+- **Implementation**: Blueprint-child Export nodes (`_isChildMachine`) are ignored as sinks (zero demand) and excluded from Production Summary export counting.
+
+### Blueprint Quantity (×N) Applies to Child Machines (2026-01-30)
+
+Blueprint instances can be placed with a **Quantity** (e.g. ×3). Because external connections are resolved directly to internal child machines, the calculator must apply the blueprint quantity multiplier when computing child machine port rates/demands and distributing flow.
+
+- **Fix**: Introduced a derived per-machine multiplier (stored in `state.calc`) so internal child machines behave as if there are N copies, making external connections pull the correct aggregated rates.
+
+### Blueprint Creation: Outputs Require Explicit Export (2026-01-30)
+
+When creating a blueprint from a selection, **blueprint outputs** are determined only by:
+- Connections that cross the selection boundary (inside → outside), and
+- Connections that go into a **main-canvas** Export node.
+
+We intentionally do **not** treat “unconnected surplus” as an output during blueprint creation. This prevents
+surplus that is only routed to an internal blueprint Export node (metadata-only) from being reported as an
+exportable blueprint output.
+
+### Nurseries: Fertilizer Import + “No Fertiliser” Warning (2026-01-30)
+
+- **Import requirement**: A nursery’s fertilizer demand is treated like any other missing input:
+  if the fertilizer input is unconnected and a fertilizer is selected in the dropdown, it counts as an **import** in Production Summary.
+- **No fertiliser selected**: If a nursery has no fertilizer connection and no selected fertilizer, it shows a warning icon (“No Fertiliser selected”).
+- **Priority**: A fertilizer **connection** overrides the dropdown selection.
+
+### Feedback Loops / Cycles: Underclock Solver (2026-01-30)
+
+Some builds form **cycles** (e.g. Fertilizer → Nursery → Plant Ash → Fertilizer). The underclock solver now uses a small **fixed-point iteration** instead of short-circuiting cycles to 100% efficiency. This produces consistent steady-state utilization for self-contained loops.
+
+### Stability Warnings for Indeterminate “Self-Contained” Loops (2026-01-30)
+
+Some closed-loop builds have **no external sink or buffer** (no Export, no Storage, no unconnected outputs). In these cases, the model may converge to the **trivial 0-throughput** solution (or fail to converge), even though a “real world” factory might oscillate (start/stop).
+
+When this happens, the Production Summary shows a warning recommending adding an **Export** or **Storage** to break the ambiguity.
+
+### Cost Settings (Blueprint-based) (2026-01-30)
+
+For cost calculations (estimated vs true), the app can use **user-selected blueprints** as the standard production chains for:
+- **Fuel** (e.g. a Charcoal Powder generator blueprint)
+- **Fertilizer**
+
+These are configured via `File → Cost Settings…` and persisted in localStorage.
+
 ---
 
-*Document Version: 1.1*  
-*Last Updated: 2026-01-29*  
+*Document Version: 1.3*  
+*Last Updated: 2026-01-30*  
 *Project Status: Core features complete, ready for enhancement*
 
 ---

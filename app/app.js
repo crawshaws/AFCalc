@@ -33,6 +33,8 @@
   const BUILD_STORAGE_KEY = "af_planner_build_v1";
   const SKILLS_STORAGE_KEY = "af_planner_skills_v1";
   const UI_PREFS_STORAGE_KEY = "af_planner_ui_prefs_v1";
+  const WORKSPACES_STORAGE_KEY = "af_planner_workspaces_v1";
+  const SETTINGS_STORAGE_KEY = "af_planner_settings_v1";
   const SCHEMA_VERSION = 1;
 
   // Game constants
@@ -87,6 +89,14 @@
       selectedConnection: null, // Currently selected connection on canvas
       camera: { x: 0, y: 0, zoom: 1.0 }, // Camera position (world coords at viewport center) and zoom level
     },
+    // Multiple independent production workspaces (tabs).
+    // Each tab owns a build/canvas state; switching tabs swaps `state.build`.
+    workspaces: {
+      version: 1,
+      activeId: null,
+      /** @type {Array<{ id: string, name: string, build: { placedMachines: Array<any>, connections: Array<any>, camera: any } }>} */
+      tabs: [],
+    },
     blueprintEditStack: [], // Stack of canvas states when editing blueprints recursively
     currentBlueprintEdit: null, // { blueprintId, instanceId (if editing a placed instance), parentInstanceId (for nested edits) }
     blueprintMachineCountCache: {}, // Cache for recursive blueprint machine counts { blueprintId: { totalCount, breakdown: { machineId: count } } }
@@ -99,6 +109,13 @@
       fertilizerEfficiency: 0, // Each point = +10% fertilizer Nutrient Value (V) - Base 100%      
       shopProfit: 0, // Each point = +3% (increasing) shop profit - Base 100%
     },
+    settings: {
+      version: 1,
+      costBlueprints: {
+        fuel: { blueprintId: null, outputMaterialId: null },
+        fertilizer: { blueprintId: null, outputMaterialId: null },
+      },
+    },
   };
 
   // Expose shared state early so other layer files can reference it.
@@ -110,6 +127,8 @@
   AF.consts.BUILD_STORAGE_KEY = BUILD_STORAGE_KEY;
   AF.consts.SKILLS_STORAGE_KEY = SKILLS_STORAGE_KEY;
   AF.consts.UI_PREFS_STORAGE_KEY = UI_PREFS_STORAGE_KEY;
+  AF.consts.WORKSPACES_STORAGE_KEY = WORKSPACES_STORAGE_KEY;
+  AF.consts.SETTINGS_STORAGE_KEY = SETTINGS_STORAGE_KEY;
   AF.consts.SCHEMA_VERSION = SCHEMA_VERSION;
   AF.consts.CONVEYOR_SPEED = CONVEYOR_SPEED;
 
@@ -196,6 +215,7 @@
    * Export entire state (database + build + skills)
    */
   function exportFullState() {
+    const activeWorkspace = getActiveWorkspaceTab();
     const fullState = {
       version: 1,
       database: state.db,
@@ -204,6 +224,7 @@
         connections: state.build.connections,
         camera: state.build.camera
       },
+      workspace: activeWorkspace ? { id: activeWorkspace.id, name: activeWorkspace.name } : null,
       skills: state.skills
     };
 
@@ -225,9 +246,12 @@
    * This is intentionally compact and importable.
    */
   function exportBuildState() {
+    const activeWorkspace = getActiveWorkspaceTab();
+    const workspaceName = activeWorkspace?.name || null;
     const buildState = {
       version: 1,
       kind: "af_build_v1",
+      name: workspaceName,
       build: {
         placedMachines: state.build.placedMachines,
         connections: state.build.connections,
@@ -235,12 +259,15 @@
       },
     };
 
+    const safeName = workspaceName
+      ? String(workspaceName).trim().replace(/[<>:"/\\|?*\u0000-\u001F]/g, "").replace(/\s+/g, "-").slice(0, 60)
+      : "";
     const content = JSON.stringify(buildState, null, 2);
     const blob = new Blob([content], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `alchemy-factory-build-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `alchemy-factory-build${safeName ? `-${safeName}` : ""}-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -309,6 +336,100 @@
   }
 
   /**
+   * Import build (canvas) only.
+   * - Accepts `af_build_v1` exports (from Export Build)
+   * - Also accepts full-state exports, but only applies the build portion
+   * - Keeps the current database/skills intact
+   * - Ensures any blueprint definitions referenced by placed blueprint instances exist in `state.db.blueprints`
+   * @param {File} file
+   * @returns {Promise<void>}
+   */
+  async function importBuildState(file) {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+
+    /** @type {{ placedMachines: Array<any>, connections: Array<any>, camera?: any } | null} */
+    let build = null;
+    /** @type {string|null} */
+    let name = null;
+
+    if (parsed && parsed.kind === "af_build_v1" && parsed.build) {
+      build = parsed.build;
+      name = typeof parsed.name === "string" ? parsed.name : null;
+    } else if (parsed && parsed.version && parsed.build) {
+      // Full-state style export; take the build portion only.
+      build = parsed.build;
+      name = typeof parsed?.workspace?.name === "string" ? parsed.workspace.name : null;
+    } else if (parsed && Array.isArray(parsed.placedMachines) && Array.isArray(parsed.connections)) {
+      // Loose build object (localStorage-like)
+      build = parsed;
+      name = typeof parsed.name === "string" ? parsed.name : null;
+    }
+
+    if (!build) throw new Error("Unrecognized build JSON format");
+
+    const normalizedBuild = normalizeBuildData(build);
+    const placedMachines = normalizedBuild.placedMachines;
+    const connections = normalizedBuild.connections;
+
+    // Ensure blueprints referenced by blueprint instances exist in the DB.
+    // This is required for blueprint sidebar visibility and blueprint editing.
+    ensureBlueprintsInDbFromBuild(placedMachines);
+
+    const tabName = (typeof name === "string" && name.trim()) ? name.trim() : getNextDefaultWorkspaceName();
+    const newTab = createWorkspaceTab({ name: tabName, build: normalizedBuild, switchTo: true });
+    if (newTab) {
+      AF.ui?.setStatus?.(`Loaded build into new tab: "${newTab.name}".`, "ok");
+    } else {
+      AF.ui?.setStatus?.("Loaded build JSON.", "ok");
+    }
+  }
+
+  /**
+   * Ensures blueprints referenced by placed blueprint instances exist in the DB.
+   * @param {Array<any>} placedMachines
+   */
+  function ensureBlueprintsInDbFromBuild(placedMachines) {
+    if (!Array.isArray(state.db.blueprints)) state.db.blueprints = [];
+
+    const existingIds = new Set((state.db.blueprints || []).map(bp => bp?.id).filter(Boolean));
+    let added = 0;
+
+    const queue = Array.isArray(placedMachines) ? [...placedMachines] : [];
+    while (queue.length) {
+      const pm = queue.shift();
+      if (!pm || typeof pm !== "object") continue;
+
+      if ((pm.type === "blueprint_instance" || pm.type === "blueprint") && Array.isArray(pm.childMachines)) {
+        pm.childMachines.forEach(cm => queue.push(cm));
+      }
+
+      if (!(pm.type === "blueprint_instance" || pm.type === "blueprint")) continue;
+      const blueprintId = pm.blueprintId;
+      const bpData = pm.blueprintData;
+      if (!blueprintId || !bpData) continue;
+      if (existingIds.has(blueprintId)) continue;
+
+      // Minimal blueprint template record (same shape as created blueprints)
+      state.db.blueprints.push({
+        id: blueprintId,
+        name: bpData.name || pm.name || "Imported Blueprint",
+        description: bpData.description || "",
+        machines: Array.isArray(bpData.machines) ? bpData.machines : [],
+        connections: Array.isArray(bpData.connections) ? bpData.connections : [],
+        inputs: Array.isArray(bpData.inputs) ? bpData.inputs : [],
+        outputs: Array.isArray(bpData.outputs) ? bpData.outputs : [],
+        createdAt: bpData.createdAt || new Date().toISOString(),
+      });
+
+      existingIds.add(blueprintId);
+      added++;
+    }
+
+    if (added > 0) saveDb();
+  }
+
+  /**
    * Save the build to localStorage
    * IMPORTANT: Blueprint editing is an in-memory operation only.
    * When in blueprint edit mode, this saves the MAIN canvas (from the bottom of the edit stack),
@@ -336,6 +457,14 @@
       };
     }
 
+    // Persist to the active workspace tab (primary storage).
+    const tab = getActiveWorkspaceTab();
+    if (tab) {
+      tab.build = buildData;
+      saveWorkspaces();
+    }
+
+    // Backward compatibility: mirror active workspace to legacy build key.
     localStorage.setItem(BUILD_STORAGE_KEY, JSON.stringify(buildData, null, 2));
   }
 
@@ -457,68 +586,291 @@
   }
 
   
-  function loadBuild() {
-    const raw = localStorage.getItem(BUILD_STORAGE_KEY);
-    if (!raw) return { placedMachines: [], connections: [] };
-    try {
-      const parsed = JSON.parse(raw);
-      const placedMachines = Array.isArray(parsed.placedMachines)
-        ? parsed.placedMachines.map(pm => {
-          const normalized = {
-            ...pm,
-            type: pm.type || "machine",
-            count: pm.count || 1,
-          };
-          if (pm.type === "purchasing_portal") {
-            normalized.materialId = pm.materialId || null;
-          }
-          // Legacy compat: Fuel Source node was removed. Convert to Purchasing Portal (fuelId -> materialId).
-          if (pm.type === "fuel_source") {
-            normalized.type = "purchasing_portal";
-            normalized.materialId = pm.fuelId || null;
-            delete normalized.fuelId;
-          }
-          if (pm.type === "nursery") {
-            normalized.plantId = pm.plantId || null;
-            normalized.fertilizerId = pm.fertilizerId || null;
-          }
-          // Storage machine (type === "machine" but machine.kind === "storage")
-          if (pm.type === "machine" && pm.machineId) {
-            // We'll check if it's a storage machine when rendering
-            normalized.storageSlots = Number.isFinite(pm.storageSlots) && pm.storageSlots > 0
-              ? Math.trunc(pm.storageSlots)
-              : null;
-            normalized.inventories = Array.isArray(pm.inventories) ? pm.inventories : [];
-            normalized.manualInventories = Array.isArray(pm.manualInventories) ? pm.manualInventories : [];
-            // Heating device machine (type === "machine" but machine.kind === "heating_device")
-            normalized.toppers = Array.isArray(pm.toppers) ? pm.toppers : [];
-            normalized.previewFuelId = typeof pm.previewFuelId === 'string' ? pm.previewFuelId : null;
-          }
-          return normalized;
-        })
-        : [];
+  /**
+   * Normalize a build-like object into a safe build payload.
+   * @param {any} raw
+   * @returns {{ placedMachines: Array<any>, connections: Array<any>, camera: { x: number, y: number, zoom: number } }}
+   */
+  function normalizeBuildData(raw) {
+    const parsed = raw && typeof raw === "object" ? raw : {};
 
-      const connections = Array.isArray(parsed.connections) ? parsed.connections : [];
-
-      // Load camera state or use defaults
-      const camera = parsed.camera && typeof parsed.camera === 'object'
-        ? {
-          x: Number(parsed.camera.x) || 0,
-          y: Number(parsed.camera.y) || 0,
-          zoom: Number(parsed.camera.zoom) || 1.0
+    const placedMachines = Array.isArray(parsed.placedMachines)
+      ? parsed.placedMachines.map(pm => {
+        const normalized = {
+          ...pm,
+          type: pm.type || "machine",
+          count: pm.count || 1,
+        };
+        if (pm.type === "purchasing_portal") {
+          normalized.materialId = pm.materialId || null;
         }
-        : { x: 0, y: 0, zoom: 1.0 };
+        // Legacy compat: Fuel Source node was removed. Convert to Purchasing Portal (fuelId -> materialId).
+        if (pm.type === "fuel_source") {
+          normalized.type = "purchasing_portal";
+          normalized.materialId = pm.fuelId || null;
+          delete normalized.fuelId;
+        }
+        if (pm.type === "nursery") {
+          normalized.plantId = pm.plantId || null;
+          normalized.fertilizerId = pm.fertilizerId || null;
+        }
+        // Storage / heating device extra fields (type === "machine")
+        if (pm.type === "machine" && pm.machineId) {
+          normalized.storageSlots = Number.isFinite(pm.storageSlots) && pm.storageSlots > 0
+            ? Math.trunc(pm.storageSlots)
+            : null;
+          normalized.inventories = Array.isArray(pm.inventories) ? pm.inventories : [];
+          normalized.manualInventories = Array.isArray(pm.manualInventories) ? pm.manualInventories : [];
+          normalized.toppers = Array.isArray(pm.toppers) ? pm.toppers : [];
+          normalized.previewFuelId = typeof pm.previewFuelId === "string" ? pm.previewFuelId : null;
+        }
+        return normalized;
+      })
+      : [];
 
-      // Validate the build
-      const issues = validateBuild(placedMachines, connections);
-      if (issues.length > 0) {
-        AF.ui.showValidationWarning(issues, 'saved build');
+    const connections = Array.isArray(parsed.connections) ? parsed.connections : [];
+
+    const camera = parsed.camera && typeof parsed.camera === "object"
+      ? {
+        x: Number(parsed.camera.x) || 0,
+        y: Number(parsed.camera.y) || 0,
+        zoom: Number(parsed.camera.zoom) || 1.0
       }
+      : { x: 0, y: 0, zoom: 1.0 };
 
-      return { placedMachines, connections, camera };
+    return { placedMachines, connections, camera };
+  }
+
+  function loadBuildFromLegacyStorage() {
+    const raw = localStorage.getItem(BUILD_STORAGE_KEY);
+    if (!raw) return { placedMachines: [], connections: [], camera: { x: 0, y: 0, zoom: 1.0 } };
+    try {
+      return normalizeBuildData(JSON.parse(raw));
     } catch {
       return { placedMachines: [], connections: [], camera: { x: 0, y: 0, zoom: 1.0 } };
     }
+  }
+
+  /**
+   * Public load build helper:
+   * - Prefer the active workspace tab build (if present)
+   * - Fall back to legacy build key
+   */
+  function loadBuild() {
+    const tab = getActiveWorkspaceTab();
+    if (tab && tab.build) return normalizeBuildData(tab.build);
+    return loadBuildFromLegacyStorage();
+  }
+
+  function getActiveWorkspaceTab() {
+    const activeId = state.workspaces?.activeId ?? null;
+    if (!activeId) return null;
+    return (state.workspaces.tabs || []).find(t => t.id === activeId) ?? null;
+  }
+
+  function getNextDefaultWorkspaceName() {
+    const n = Array.isArray(state.workspaces?.tabs) ? state.workspaces.tabs.length + 1 : 1;
+    return `New Production ${n}`;
+  }
+
+  function saveWorkspaces() {
+    const payload = {
+      version: 1,
+      activeId: state.workspaces.activeId,
+      tabs: (state.workspaces.tabs || []).map(t => ({
+        id: t.id,
+        name: typeof t.name === "string" ? t.name : "",
+        build: t.build || { placedMachines: [], connections: [], camera: { x: 0, y: 0, zoom: 1.0 } },
+      })),
+    };
+    localStorage.setItem(WORKSPACES_STORAGE_KEY, JSON.stringify(payload, null, 2));
+  }
+
+  function loadWorkspaces() {
+    const raw = localStorage.getItem(WORKSPACES_STORAGE_KEY);
+    if (!raw) {
+      // Migration: if legacy build exists, use it as first workspace.
+      const legacyBuild = loadBuildFromLegacyStorage();
+      const firstTab = {
+        id: makeId("ws"),
+        name: "New Production 1",
+        build: legacyBuild,
+      };
+      state.workspaces.tabs = [firstTab];
+      state.workspaces.activeId = firstTab.id;
+      saveWorkspaces();
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      const tabs = Array.isArray(parsed.tabs) ? parsed.tabs : [];
+      const normalizedTabs = tabs
+        .filter(t => t && typeof t === "object")
+        .map((t, idx) => ({
+          id: typeof t.id === "string" ? t.id : makeId("ws"),
+          name: (typeof t.name === "string" && t.name.trim()) ? t.name.trim() : `New Production ${idx + 1}`,
+          build: normalizeBuildData(t.build || t),
+        }));
+
+      state.workspaces.tabs = normalizedTabs.length ? normalizedTabs : [{
+        id: makeId("ws"),
+        name: "New Production 1",
+        build: loadBuildFromLegacyStorage(),
+      }];
+
+      const requestedActive = typeof parsed.activeId === "string" ? parsed.activeId : null;
+      const resolvedActive = (requestedActive && state.workspaces.tabs.some(t => t.id === requestedActive))
+        ? requestedActive
+        : state.workspaces.tabs[0].id;
+      state.workspaces.activeId = resolvedActive;
+    } catch {
+      state.workspaces.tabs = [{
+        id: makeId("ws"),
+        name: "New Production 1",
+        build: loadBuildFromLegacyStorage(),
+      }];
+      state.workspaces.activeId = state.workspaces.tabs[0].id;
+    }
+  }
+
+  /**
+   * @param {{ name: string, build?: { placedMachines: Array<any>, connections: Array<any>, camera?: any }, switchTo?: boolean }} opts
+   */
+  function createWorkspaceTab(opts) {
+    const name = (opts?.name && String(opts.name).trim()) ? String(opts.name).trim() : getNextDefaultWorkspaceName();
+    const build = opts?.build ? normalizeBuildData(opts.build) : { placedMachines: [], connections: [], camera: { x: 0, y: 0, zoom: 1.0 } };
+    const tab = { id: makeId("ws"), name, build };
+    state.workspaces.tabs.push(tab);
+    if (opts?.switchTo) {
+      switchWorkspaceTab(tab.id);
+    } else {
+      saveWorkspaces();
+    }
+    return tab;
+  }
+
+  function renameWorkspaceTab(tabId, newName) {
+    const tab = (state.workspaces.tabs || []).find(t => t.id === tabId) ?? null;
+    if (!tab) return false;
+    const name = String(newName ?? "").trim();
+    if (!name) return false;
+    tab.name = name;
+    saveWorkspaces();
+    return true;
+  }
+
+  function switchWorkspaceTab(tabId) {
+    if (!tabId) return false;
+    if (state.currentBlueprintEdit || (state.blueprintEditStack && state.blueprintEditStack.length > 0)) {
+      AF.ui?.dialog?.alert?.("Exit blueprint editing before switching tabs.", { title: "Cannot switch tab" });
+      return false;
+    }
+
+    // Save current build into current tab before switching.
+    saveBuild();
+
+    const tab = (state.workspaces.tabs || []).find(t => t.id === tabId) ?? null;
+    if (!tab) return false;
+
+    state.workspaces.activeId = tab.id;
+    saveWorkspaces();
+
+    const build = normalizeBuildData(tab.build);
+    state.build.placedMachines = build.placedMachines;
+    state.build.connections = build.connections;
+    state.build.camera = build.camera;
+    state.build.selectedMachines = [];
+    state.build.selectedConnection = null;
+
+    // Clear transient UI state that should not leak between tabs.
+    state.ui.dragState = null;
+    state.ui.pendingStorageCoords = null;
+    state.ui.pendingManualStorageMachineId = null;
+    state.ui.pendingStorageReplacementId = null;
+    state.ui.pendingHeatingDeviceId = null;
+    state.ui.pendingBlueprintCoords = null;
+    state.ui.justCompletedSelection = false;
+
+    state.blueprintEditStack = [];
+    state.currentBlueprintEdit = null;
+
+    // Full recalc + render (topology changed)
+    AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: true });
+    return true;
+  }
+
+  /**
+   * Close a workspace tab. If closing the active tab, switches to an adjacent tab.
+   * Returns false only when it cannot close (e.g. last remaining tab).
+   * @param {string} tabId
+   */
+  function closeWorkspaceTab(tabId) {
+    if (!tabId) return false;
+    if (state.currentBlueprintEdit || (state.blueprintEditStack && state.blueprintEditStack.length > 0)) {
+      AF.ui?.dialog?.alert?.("Exit blueprint editing before closing tabs.", { title: "Cannot close tab" });
+      return false;
+    }
+
+    const tabs = state.workspaces.tabs || [];
+    if (tabs.length <= 1) return false;
+
+    // Persist current build before we mutate the tab list.
+    saveBuild();
+
+    const idx = tabs.findIndex(t => t.id === tabId);
+    if (idx === -1) return false;
+
+    const wasActive = state.workspaces.activeId === tabId;
+
+    // Choose a new active tab if needed (adjacent preference).
+    let nextActiveId = null;
+    if (wasActive) {
+      const right = tabs[idx + 1];
+      const left = tabs[idx - 1];
+      nextActiveId = (right && right.id) ? right.id : (left && left.id) ? left.id : null;
+    }
+
+    tabs.splice(idx, 1);
+
+    if (!wasActive) {
+      saveWorkspaces();
+      return true;
+    }
+
+    // Switch to the selected remaining tab.
+    if (!nextActiveId) {
+      // Shouldn't happen because we disallow closing last tab.
+      state.workspaces.activeId = tabs[0]?.id ?? null;
+      saveWorkspaces();
+      return false;
+    }
+
+    state.workspaces.activeId = nextActiveId;
+    saveWorkspaces();
+
+    const nextTab = tabs.find(t => t.id === nextActiveId) ?? null;
+    const build = normalizeBuildData(nextTab?.build || null);
+    state.build.placedMachines = build.placedMachines;
+    state.build.connections = build.connections;
+    state.build.camera = build.camera;
+    state.build.selectedMachines = [];
+    state.build.selectedConnection = null;
+
+    // Clear transient UI state that should not leak between tabs.
+    state.ui.dragState = null;
+    state.ui.pendingStorageCoords = null;
+    state.ui.pendingManualStorageMachineId = null;
+    state.ui.pendingStorageReplacementId = null;
+    state.ui.pendingHeatingDeviceId = null;
+    state.ui.pendingBlueprintCoords = null;
+    state.ui.justCompletedSelection = false;
+
+    state.blueprintEditStack = [];
+    state.currentBlueprintEdit = null;
+
+    AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: true });
+    return true;
   }
 
   function saveSkills() {
@@ -591,6 +943,44 @@
     }
   }
 
+  // ---------- Settings ----------
+
+  function getDefaultSettings() {
+    return {
+      version: 1,
+      costBlueprints: {
+        fuel: { blueprintId: null, outputMaterialId: null },
+        fertilizer: { blueprintId: null, outputMaterialId: null },
+      },
+    };
+  }
+
+  function saveSettings() {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(state.settings || getDefaultSettings(), null, 2));
+  }
+
+  function loadSettings() {
+    const defaults = getDefaultSettings();
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return defaults;
+    try {
+      const parsed = JSON.parse(raw);
+      const out = getDefaultSettings();
+      if (parsed && typeof parsed === "object") {
+        const cb = parsed.costBlueprints || {};
+        const fuel = cb.fuel || {};
+        const fert = cb.fertilizer || {};
+        out.costBlueprints.fuel.blueprintId = typeof fuel.blueprintId === "string" ? fuel.blueprintId : null;
+        out.costBlueprints.fuel.outputMaterialId = typeof fuel.outputMaterialId === "string" ? fuel.outputMaterialId : null;
+        out.costBlueprints.fertilizer.blueprintId = typeof fert.blueprintId === "string" ? fert.blueprintId : null;
+        out.costBlueprints.fertilizer.outputMaterialId = typeof fert.outputMaterialId === "string" ? fert.outputMaterialId : null;
+      }
+      return out;
+    } catch {
+      return defaults;
+    }
+  }
+
   // Persistence + loading helpers shared across layers
   Object.assign(AF.core, {
     saveDb,
@@ -600,12 +990,23 @@
     exportFullState,
     exportBuildState,
     importFullState,
+    importBuildState,
     saveBuild,
     loadBuild,
+    // Workspaces (production tabs)
+    saveWorkspaces,
+    loadWorkspaces,
+    getActiveWorkspaceTab,
+    createWorkspaceTab,
+    renameWorkspaceTab,
+    switchWorkspaceTab,
+    closeWorkspaceTab,
     saveSkills,
     loadSkills,
     saveUIPrefs,
     loadUIPrefs,
+    saveSettings,
+    loadSettings,
     validateBuild
   });
 
@@ -1066,6 +1467,11 @@
             if (state.ui.sidebars.production) {
               AF.ui.renderProductionSummary();
             }
+
+            // `renderAllUIElements()` may change the layout grid columns, which changes the canvas size.
+            // Re-apply the camera transform after layout settles so the visual camera matches the
+            // stored camera coords on initial load.
+            setTimeout(() => AF.render?.updateCameraTransform?.(), 0);
           } finally {
             renderDirty = false;
           }
@@ -1109,11 +1515,13 @@
 
   function init() {
     state.db = loadDb();
+    loadWorkspaces();
     const buildData = loadBuild();
     state.build.placedMachines = buildData.placedMachines;
     state.build.connections = buildData.connections;
-    state.build.camera = buildData.camera;
+    state.build.camera = buildData.camera || { x: 0, y: 0, zoom: 1.0 };
     state.skills = loadSkills();
+    state.settings = loadSettings();
 
     // Load UI preferences (sidebar states)
     const uiPrefs = loadUIPrefs();

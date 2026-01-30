@@ -302,10 +302,12 @@
   function init() {
     wireMenus();
     wireTabs();
+    wireWorkspaceTabs();
     wireSearch();
     wireAddButtons();
     wireListsAndForms();
     wireImportInput();
+    wireBuildImportInput();
     wireCanvas();
   }
 
@@ -358,6 +360,19 @@
         AF.state.ui.activeTab = btn.dataset.tab;
         renderTabs();
       });
+    });
+  }
+
+  function wireWorkspaceTabs() {
+    const bar = $("#workspaceTabsBar");
+    if (!bar) return;
+
+    // Double-click a tab to rename it.
+    bar.addEventListener("dblclick", async (e) => {
+      if (e.target.closest?.('[data-action="workspace:close"]')) return;
+      const tabBtn = e.target.closest?.("[data-workspace-id]");
+      if (!tabBtn) return;
+      await handleAction("workspace:rename-tab", { workspaceId: tabBtn.dataset.workspaceId });
     });
   }
 
@@ -429,6 +444,21 @@
       } catch (err) {
         console.error(err);
         setStatus("Failed to import JSON (invalid file).", "error");
+      }
+    });
+  }
+
+  function wireBuildImportInput() {
+    const input = $("#importBuildInput");
+    if (!input) return;
+    input.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        await importBuildFromFile(file);
+      } catch (err) {
+        console.error(err);
+        setStatus("Failed to load build JSON (invalid file).", "error");
       }
     });
   }
@@ -686,6 +716,64 @@
 
   async function handleAction(action, data = {}) {
     switch (action) {
+      case "workspace:new": {
+        const tab = AF.core?.createWorkspaceTab?.({ name: "", switchTo: true });
+        renderWorkspaceTabsUI();
+        if (tab) setStatus(`Created tab: "${tab.name}".`, "success");
+        return;
+      }
+      case "workspace:switch": {
+        const id = data.workspaceId;
+        if (!id) return;
+        const ok = AF.core?.switchWorkspaceTab?.(id);
+        if (ok) {
+          renderWorkspaceTabsUI();
+        }
+        return;
+      }
+      case "workspace:close": {
+        const id = data.workspaceId;
+        if (!id) return;
+        const tab = (AF.state.workspaces?.tabs || []).find(t => t.id === id) || null;
+        if (!tab) return;
+
+        const ok = await AF.ui.dialog.confirm(
+          `Close "${tab.name}"?\n\nThis will remove this production workspace and its canvas state from your browser.`,
+          { title: "Close tab", danger: true, okText: "Close", cancelText: "Cancel" }
+        );
+        if (!ok) return;
+
+        const closed = AF.core?.closeWorkspaceTab?.(id);
+        if (!closed) {
+          await AF.ui.dialog.alert("You must keep at least one workspace tab open.", { title: "Cannot close tab" });
+          return;
+        }
+        renderWorkspaceTabsUI();
+        setStatus(`Closed tab: "${tab.name}".`, "info");
+        return;
+      }
+      case "workspace:rename": {
+        const active = AF.core?.getActiveWorkspaceTab?.();
+        if (!active) return;
+        const name = await AF.ui.dialog.prompt("Rename this production workspace:", active.name, { title: "Rename tab" });
+        if (!name) return;
+        AF.core?.renameWorkspaceTab?.(active.id, name);
+        renderWorkspaceTabsUI();
+        setStatus(`Renamed tab to "${name}".`, "success");
+        return;
+      }
+      case "workspace:rename-tab": {
+        const id = data.workspaceId;
+        if (!id) return;
+        const tab = (AF.state.workspaces?.tabs || []).find(t => t.id === id) || null;
+        if (!tab) return;
+        const name = await AF.ui.dialog.prompt("Rename this production workspace:", tab.name, { title: "Rename tab" });
+        if (!name) return;
+        AF.core?.renameWorkspaceTab?.(id, name);
+        renderWorkspaceTabsUI();
+        setStatus(`Renamed tab to "${name}".`, "success");
+        return;
+      }
       case "file:new": {
         const ok = await AF.ui.dialog.confirm(
           "This will clear the local database stored in your browser. Continue?",
@@ -703,6 +791,13 @@
       case "file:export-build":
         AF.core?.exportBuildState?.();
         return;
+      case "file:load-build": {
+        const input = $("#importBuildInput");
+        if (!input) return;
+        input.value = "";
+        input.click();
+        return;
+      }
       case "file:import": {
         const input = $("#importFileInput");
         if (!input) return;
@@ -712,6 +807,9 @@
       }
       case "file:validate":
         validateCurrentBuild();
+        return;
+      case "file:cost-settings":
+        openCostSettingsDialog();
         return;
       case "file:clear-build": {
         const ok = await AF.ui.dialog.confirm(
@@ -736,6 +834,9 @@
         return;
       case "skills:save":
         saveSkillsFromDialog();
+        return;
+      case "settings:save-cost":
+        saveCostSettingsFromDialog();
         return;
       case "canvas:toggle-production":
         toggleProductionSidebar();
@@ -1392,6 +1493,8 @@
               if (toMachineDef && toMachineDef.kind === "heating_device") {
                 needsFullRender = true;
               }
+            } else if (toMachine && toMachine.type === "export") {
+              needsFullRender = true;
             }
 
             AF.core?.saveBuild?.();
@@ -1855,6 +1958,10 @@
         inputsEl.innerHTML = '<em>No external inputs required</em>';
       } else {
         inputsEl.innerHTML = analysis.inputs.map(input => {
+          if (input.kind === "fuel" || (input.materialId == null && input.internalPortIdx === "fuel")) {
+            const pStr = Number(input.rate || 0).toFixed(1);
+            return `<div>• Fuel: ${pStr}P</div>`;
+          }
           const material = AF.core?.getMaterialById(input.materialId);
           const materialName = material ? material.name : "Unknown";
           return `<div>• ${materialName}: ${input.rate.toFixed(2)}/min</div>`;
@@ -1890,6 +1997,113 @@
     if (overlay) {
       overlay.onclick = closeDialog;
     }
+  }
+
+  // ---------- Cost settings ----------
+
+  function openCostSettingsDialog() {
+    const dialog = $("#costSettingsDialog");
+    if (!dialog) return;
+
+    // Populate blueprint dropdowns
+    const fuelBpSelect = /** @type {HTMLSelectElement|null} */ ($("#costFuelBlueprintSelect"));
+    const fuelOutSelect = /** @type {HTMLSelectElement|null} */ ($("#costFuelOutputSelect"));
+    const fertBpSelect = /** @type {HTMLSelectElement|null} */ ($("#costFertilizerBlueprintSelect"));
+    const fertOutSelect = /** @type {HTMLSelectElement|null} */ ($("#costFertilizerOutputSelect"));
+
+    const blueprints = Array.isArray(AF.state.db.blueprints) ? AF.state.db.blueprints : [];
+    const settings = AF.state.settings || {};
+    const costBlueprints = settings.costBlueprints || {};
+
+    const fuelSel = costBlueprints.fuel || {};
+    const fertSel = costBlueprints.fertilizer || {};
+
+    function fillBlueprintOptions(selectEl, filterFn) {
+      if (!selectEl) return;
+      const current = selectEl.value;
+      selectEl.innerHTML = `<option value="">(none)</option>` + blueprints
+        .filter(filterFn)
+        .map(bp => `<option value="${bp.id}">${escapeHtml(bp.name || "Unnamed Blueprint")}</option>`)
+        .join("");
+      // Restore selection if possible
+      if (current) selectEl.value = current;
+    }
+
+    function blueprintOutputsFor(bpId) {
+      const bp = blueprints.find(b => b.id === bpId) || null;
+      return bp && Array.isArray(bp.outputs) ? bp.outputs : [];
+    }
+
+    function fillOutputOptions(selectEl, outputs, type) {
+      if (!selectEl) return;
+      const opts = outputs
+        .map(o => {
+          const mat = o && o.materialId ? AF.core.getMaterialById(o.materialId) : null;
+          if (!mat) return null;
+          if (type === "fuel" && !mat.isFuel) return null;
+          if (type === "fertilizer" && !mat.isFertilizer) return null;
+          return `<option value="${mat.id}">${escapeHtml(mat.name)}</option>`;
+        })
+        .filter(Boolean)
+        .join("");
+      selectEl.innerHTML = `<option value="">(auto)</option>${opts}`;
+    }
+
+    // Filter blueprints by having at least one qualifying output
+    fillBlueprintOptions(fuelBpSelect, bp => (bp.outputs || []).some(o => {
+      const mat = o && o.materialId ? AF.core.getMaterialById(o.materialId) : null;
+      return !!mat && !!mat.isFuel;
+    }));
+    fillBlueprintOptions(fertBpSelect, bp => (bp.outputs || []).some(o => {
+      const mat = o && o.materialId ? AF.core.getMaterialById(o.materialId) : null;
+      return !!mat && !!mat.isFertilizer;
+    }));
+
+    if (fuelBpSelect) fuelBpSelect.value = fuelSel.blueprintId || "";
+    if (fertBpSelect) fertBpSelect.value = fertSel.blueprintId || "";
+
+    // Initial output lists
+    fillOutputOptions(fuelOutSelect, blueprintOutputsFor(fuelSel.blueprintId), "fuel");
+    fillOutputOptions(fertOutSelect, blueprintOutputsFor(fertSel.blueprintId), "fertilizer");
+
+    if (fuelOutSelect) fuelOutSelect.value = fuelSel.outputMaterialId || "";
+    if (fertOutSelect) fertOutSelect.value = fertSel.outputMaterialId || "";
+
+    // Change handlers to update output lists when blueprint changes
+    if (fuelBpSelect && fuelOutSelect) {
+      fuelBpSelect.onchange = () => {
+        fillOutputOptions(fuelOutSelect, blueprintOutputsFor(fuelBpSelect.value), "fuel");
+      };
+    }
+    if (fertBpSelect && fertOutSelect) {
+      fertBpSelect.onchange = () => {
+        fillOutputOptions(fertOutSelect, blueprintOutputsFor(fertBpSelect.value), "fertilizer");
+      };
+    }
+
+    dialog.classList.remove("hidden");
+    const overlay = dialog.querySelector(".dialog__overlay");
+    if (overlay) overlay.onclick = closeDialog;
+  }
+
+  function saveCostSettingsFromDialog() {
+    const fuelBpSelect = /** @type {HTMLSelectElement|null} */ ($("#costFuelBlueprintSelect"));
+    const fuelOutSelect = /** @type {HTMLSelectElement|null} */ ($("#costFuelOutputSelect"));
+    const fertBpSelect = /** @type {HTMLSelectElement|null} */ ($("#costFertilizerBlueprintSelect"));
+    const fertOutSelect = /** @type {HTMLSelectElement|null} */ ($("#costFertilizerOutputSelect"));
+
+    if (!AF.state.settings) AF.state.settings = { version: 1, costBlueprints: { fuel: { blueprintId: null, outputMaterialId: null }, fertilizer: { blueprintId: null, outputMaterialId: null } } };
+    if (!AF.state.settings.costBlueprints) AF.state.settings.costBlueprints = { fuel: { blueprintId: null, outputMaterialId: null }, fertilizer: { blueprintId: null, outputMaterialId: null } };
+
+    AF.state.settings.costBlueprints.fuel.blueprintId = fuelBpSelect?.value || null;
+    AF.state.settings.costBlueprints.fuel.outputMaterialId = fuelOutSelect?.value || null;
+    AF.state.settings.costBlueprints.fertilizer.blueprintId = fertBpSelect?.value || null;
+    AF.state.settings.costBlueprints.fertilizer.outputMaterialId = fertOutSelect?.value || null;
+
+    AF.core?.saveSettings?.();
+    closeDialog();
+    setStatus("Saved cost settings.", "success");
+    AF.scheduler?.invalidate?.({ needsRecalc: true, needsRender: true, forceRecreate: false });
   }
 
 
@@ -2345,6 +2559,10 @@
   async function importDbFromFile(file) {
     // Use the new importFullState which handles both formats
     await AF.core?.importFullState?.(file);
+  }
+
+  async function importBuildFromFile(file) {
+    await AF.core?.importBuildState?.(file);
   }
 
 
@@ -3161,6 +3379,12 @@
       if (!machine) return 0;
       if (machine.type === "purchasing_portal") return 0;
       if (machine.type === "nursery") return 0;
+      if (machine.type === "machine" && machine.machineId) {
+        const def = AF.core.getMachineById(machine.machineId);
+        if (def && def.kind === "heating_device") {
+          return `grouped-output-${materialId}`;
+        }
+      }
       if (machine.type === "machine" && machine.recipeId) {
         const recipe = AF.core.getRecipeById(machine.recipeId);
         if (!recipe || !Array.isArray(recipe.outputs)) return 0;
@@ -3170,8 +3394,41 @@
       return 0;
     }
 
+    function getInputPortIdxForMaterial(machine, materialId) {
+      if (!machine) return 0;
+      if (machine.type === "nursery") return 0;
+      if (machine.type === "machine" && machine.machineId) {
+        const def = AF.core.getMachineById(machine.machineId);
+        if (def && def.kind === "heating_device") {
+          return `grouped-input-${materialId}`;
+        }
+      }
+      if (machine.type === "machine" && machine.recipeId) {
+        const recipe = AF.core.getRecipeById(machine.recipeId);
+        if (!recipe || !Array.isArray(recipe.inputs)) return 0;
+        const idx = recipe.inputs.findIndex(inp => inp.materialId === materialId);
+        return idx >= 0 ? idx : 0;
+      }
+      return 0;
+    }
+
     // Map inputs - find which internal machine receives from external input
     blueprint.inputs.forEach((input, idx) => {
+      // Direct mapping hint (used for special ports like heating device fuel)
+      if ((input.kind === "fuel" || (input.materialId == null && input.internalPortIdx === "fuel")) && input.internalBlueprintMachineId) {
+        const childId = childIdMap.get(input.internalBlueprintMachineId);
+        if (childId) {
+          mappings.inputs.push({
+            portIdx: idx,
+            materialId: null,
+            kind: "fuel",
+            internalMachineId: childId,
+            internalPortIdx: "fuel",
+          });
+        }
+        return;
+      }
+
       // Find internal connections that have no external source
       // These are the machines that need external input
       const externalInputMachines = new Set();
@@ -3196,11 +3453,12 @@
       if (externalInputMachines.size > 0) {
         const templateId = Array.from(externalInputMachines)[0];
         const childId = childIdMap.get(templateId);
+        const templateMachine = blueprint.machines.find(m => m.blueprintMachineId === templateId);
         mappings.inputs.push({
           portIdx: idx,
           materialId: input.materialId,
           internalMachineId: childId,
-          internalPortIdx: 0 // Simplified - use first port
+          internalPortIdx: getInputPortIdxForMaterial(templateMachine, input.materialId)
         });
       }
     });
@@ -3314,6 +3572,17 @@
       const recipe = AF.core.getRecipeById(machine.recipeId);
       return recipe && recipe.inputs.some(inp => inp.materialId === materialId);
     }
+    // Heating device grouped inputs (toppers)
+    if (machine.type === "machine" && machine.machineId) {
+      const def = AF.core.getMachineById(machine.machineId);
+      if (def && def.kind === "heating_device") {
+        return (machine.toppers || []).some(t => {
+          if (!t.recipeId) return false;
+          const r = AF.core.getRecipeById(t.recipeId);
+          return !!r && (r.inputs || []).some(inp => inp.materialId === materialId);
+        });
+      }
+    }
     return false;
   }
 
@@ -3324,6 +3593,17 @@
     if (machine.type === "machine" && machine.recipeId) {
       const recipe = AF.core.getRecipeById(machine.recipeId);
       return recipe && recipe.outputs.some(out => out.materialId === materialId);
+    }
+    // Heating device grouped outputs (toppers)
+    if (machine.type === "machine" && machine.machineId) {
+      const def = AF.core.getMachineById(machine.machineId);
+      if (def && def.kind === "heating_device") {
+        return (machine.toppers || []).some(t => {
+          if (!t.recipeId) return false;
+          const r = AF.core.getRecipeById(t.recipeId);
+          return !!r && (r.outputs || []).some(out => out.materialId === materialId);
+        });
+      }
     }
     return false;
   }
@@ -3336,6 +3616,19 @@
 
     if (machine.type === "purchasing_portal") {
       return machine.materialId;
+    }
+    if (machine.type === "machine" && machine.machineId) {
+      const def = AF.core.getMachineById(machine.machineId);
+      if (def && def.kind === "heating_device") {
+        // Grouped ports carry materialId encoded in the port string.
+        if (portType === "output" && typeof conn.fromPortIdx === "string" && conn.fromPortIdx.startsWith("grouped-output-")) {
+          return conn.fromPortIdx.replace(/^grouped-output-/, "") || null;
+        }
+        if (portType === "input" && typeof conn.toPortIdx === "string" && conn.toPortIdx.startsWith("grouped-input-")) {
+          return conn.toPortIdx.replace(/^grouped-input-/, "") || null;
+        }
+        return null;
+      }
     }
     if (machine.type === "machine" && machine.recipeId) {
       const recipe = AF.core.getRecipeById(machine.recipeId);
@@ -3358,6 +3651,7 @@
   // ---------- Rendering ----------
 
   function renderAllUIElements() {
+    renderWorkspaceTabsUI();
     renderTabs();
     renderMaterials();
     renderMachines();
@@ -3365,6 +3659,45 @@
     renderBlueprintsList();
     updateCreateBlueprintButton();
     updateLayoutGridColumns();
+  }
+
+  function renderWorkspaceTabsUI() {
+    const list = $("#workspaceTabsList");
+    const nameEl = $("#activeWorkspaceName");
+    if (!list || !nameEl) return;
+
+    const tabs = Array.isArray(AF.state.workspaces?.tabs) ? AF.state.workspaces.tabs : [];
+    const activeId = AF.state.workspaces?.activeId ?? null;
+
+    list.innerHTML = tabs
+      .map(t => {
+        const isActive = t.id === activeId;
+        return `
+          <button
+            type="button"
+            class="workspaceTab${isActive ? " is-active" : ""}"
+            role="tab"
+            aria-selected="${isActive ? "true" : "false"}"
+            data-action="workspace:switch"
+            data-workspace-id="${escapeHtml(t.id)}"
+            title="${escapeHtml(t.name || "New Production")}"
+          >
+            <span class="workspaceTab__name">${escapeHtml(t.name || "New Production")}</span>
+            <span
+              class="workspaceTab__close"
+              role="button"
+              aria-label="Close tab"
+              data-action="workspace:close"
+              data-workspace-id="${escapeHtml(t.id)}"
+              title="Close"
+            >✕</span>
+          </button>
+        `;
+      })
+      .join("");
+
+    const active = AF.core?.getActiveWorkspaceTab?.() || null;
+    nameEl.textContent = active?.name || (tabs[0]?.name ?? "New Production 1");
   }
 
   function renderTabs() {
@@ -3819,12 +4152,16 @@
 
       // Build inputs HTML
       const inputsHTML = (bp.inputs || []).map(input => {
-        const material = AF.core.getMaterialById(input.materialId);
-        const materialName = material ? material.name : "Unknown";
+        const isFuel = input && (input.kind === "fuel" || input.materialId == null);
+        const material = !isFuel ? AF.core.getMaterialById(input.materialId) : null;
+        const materialName = isFuel ? "Fuel" : (material ? material.name : "Unknown");
+        const rateStr = isFuel
+          ? `${Number(input.rate || 0).toFixed(1)}P`
+          : `${input.rate.toFixed(2)}/min`;
         return `
           <div class="blueprintCard__ioItem">
             <span class="blueprintCard__ioIcon">📥</span>
-            <span>${escapeHtml(materialName)}: ${input.rate.toFixed(2)}/min</span>
+            <span>${escapeHtml(materialName)}: ${rateStr}</span>
           </div>
         `;
       }).join('');
@@ -4043,7 +4380,12 @@
       <div class="productionSection__title">📊 Net Imports / Exports</div>`;
 
     if (exportsMap.size === 0 && importsMap.size === 0) {
-      html += `<div class="hint">✅ All materials are balanced - fully self-contained production.</div>`;
+      const stabilityWarning = calc.stabilityWarning || null;
+      if (stabilityWarning) {
+        html += `<div class="hint" style="color: #ffa500; font-weight: 600;">${escapeHtml(stabilityWarning)}</div>`;
+      } else {
+        html += `<div class="hint">✅ All materials are balanced - fully self-contained production.</div>`;
+      }
     } else {
       // Sort exports by rate (descending)
       const exportEntries = Array.from(exportsMap.entries())
@@ -4080,7 +4422,12 @@
       }
 
       if (exportEntries.length === 0 && importEntries.length === 0) {
-        html += `<div class="hint">✅ All materials are balanced - fully self-contained production.</div>`;
+        const stabilityWarning = calc.stabilityWarning || null;
+        if (stabilityWarning) {
+          html += `<div class="hint" style="color: #ffa500; font-weight: 600;">${escapeHtml(stabilityWarning)}</div>`;
+        } else {
+          html += `<div class="hint">✅ All materials are balanced - fully self-contained production.</div>`;
+        }
       }
     }
     html += `</div>`;
@@ -4300,6 +4647,7 @@
     const topperDialog = $("#addTopperDialog");
     const blueprintDialog = $("#createBlueprintDialog");
     const blueprintSelectDialog = $("#blueprintSelectionDialog");
+    const costSettingsDialog = $("#costSettingsDialog");
     if (skillsDialog) skillsDialog.classList.add("hidden");
     if (productionDialog) productionDialog.classList.add("hidden");
     if (jumpDialog) jumpDialog.classList.add("hidden");
@@ -4313,6 +4661,7 @@
     if (topperDialog) topperDialog.classList.add("hidden");
     if (blueprintDialog) blueprintDialog.classList.add("hidden");
     if (blueprintSelectDialog) blueprintSelectDialog.classList.add("hidden");
+    if (costSettingsDialog) costSettingsDialog.classList.add("hidden");
 
     // Clear pending state
     AF.state.ui.pendingStorageReplacementId = null;
@@ -4426,6 +4775,31 @@
         };
       });
 
+    // Transform analysis inputs/outputs into blueprint IO specs.
+    // Special case: fuel inputs store a direct mapping hint to the internal heating device fuel port.
+    const inputs = (analysis.inputs || []).map(inp => {
+      if (inp && (inp.kind === "fuel" || (inp.materialId == null && inp.internalPortIdx === "fuel"))) {
+        return {
+          materialId: null,
+          rate: Number(inp.rate) || 0,
+          kind: "fuel",
+          internalBlueprintMachineId: idToBlueprintId.get(inp.internalMachineId),
+          internalPortIdx: "fuel",
+        };
+      }
+      return {
+        materialId: inp.materialId,
+        rate: Number(inp.rate) || 0,
+        kind: "material",
+      };
+    });
+
+    const outputs = (analysis.outputs || []).map(out => ({
+      materialId: out.materialId,
+      rate: Number(out.rate) || 0,
+      kind: "material",
+    }));
+
     // Create blueprint object
     const blueprint = {
       id: makeId("bp"),
@@ -4433,8 +4807,8 @@
       description,
       machines,
       connections,
-      inputs: analysis.inputs,
-      outputs: analysis.outputs,
+      inputs,
+      outputs,
       createdAt: new Date().toISOString(),
     };
 
@@ -4525,7 +4899,7 @@
     // Clear selection
     AF.state.build.selectedMachines = [blueprintInstance.id];
 
-    AF.app.saveBuild();
+    AF.core.saveBuild();
     AF.scheduler.invalidate({ needsRecalc: true, needsRender: true, forceRecreate: true });
     updateSelectionClasses();
   }

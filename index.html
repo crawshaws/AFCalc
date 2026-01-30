@@ -16,8 +16,10 @@
           <button type="button" role="menuitem" data-action="file:new">New (clear local data)</button>
           <hr/>
           <button type="button" role="menuitem" data-action="file:export-build">Save Production</button>
+          <button type="button" role="menuitem" data-action="file:load-build">Load Production…</button>
           <button type="button" role="menuitem" data-action="file:validate">Validate Production</button>
           <button type="button" role="menuitem" data-action="file:clear-build">Clear Production</button>
+          <button type="button" role="menuitem" data-action="file:cost-settings">Cost Settings…</button>
           <hr/>
           <button type="button" role="menuitem" data-action="file:export">Export Database…</button>
           <button type="button" role="menuitem" data-action="file:import">Import Data…</button>
@@ -120,9 +122,17 @@
       </aside>
 
       <section class="canvas" aria-label="Design canvas">
+        <div class="workspaceTabs" id="workspaceTabsBar" aria-label="Production workspaces">
+          <div class="workspaceTabs__list" id="workspaceTabsList" role="tablist" aria-label="Production workspace tabs"></div>
+          <button class="btn btn--sm workspaceTabs__add" type="button" data-action="workspace:new" title="New production workspace">＋</button>
+        </div>
         <div class="canvas__header">
           <div style="flex: 1;">
-            <div class="canvas__title">Design Canvas</div>
+            <div class="canvas__title" id="canvasTitle">
+              <span>Design Canvas:</span>
+              <span class="canvas__titleName" id="activeWorkspaceName">New Production 1</span>
+              <button class="btn btn--sm canvas__titleRename" type="button" data-action="workspace:rename" title="Rename this workspace">✎</button>
+            </div>
             <div class="canvas__subtitle" id="canvasSubtitle">Conveyor Speed: 60/min</div>
           </div>
           <button class="btn" type="button" data-action="canvas:reset-camera" title="Reset camera to origin (0,0) and 100% zoom">🏠 Home</button>
@@ -153,6 +163,7 @@
     </main>
 
     <input id="importFileInput" class="hidden" type="file" accept="application/json,.json" />
+    <input id="importBuildInput" class="hidden" type="file" accept="application/json,.json" />
     
     <!-- Jump to Coordinates Dialog -->
     <div id="jumpToCoordinatesDialog" class="dialog hidden">
@@ -632,6 +643,59 @@
         </div>
         <div class="dialog__footer">
           <button class="btn" data-action="dialog:close">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cost Settings Dialog -->
+    <div id="costSettingsDialog" class="dialog hidden">
+      <div class="dialog__overlay"></div>
+      <div class="dialog__content">
+        <div class="dialog__header">
+          <h2 class="dialog__title">Cost Settings</h2>
+          <button class="btn btn--sm" data-action="dialog:close">✕</button>
+        </div>
+        <div class="dialog__body">
+          <div class="hint" style="margin-top: 0;">
+            Select blueprints that represent your standard <strong>Fuel</strong> and <strong>Fertilizer</strong> production chains.
+            These are used for estimated cost calculations (recipe info, etc.).
+          </div>
+
+          <div class="field" style="margin-top: 12px;">
+            <label for="costFuelBlueprintSelect">Fuel cost blueprint</label>
+            <select id="costFuelBlueprintSelect" style="width: 100%;">
+              <option value="">(none)</option>
+            </select>
+            <div class="hint">Choose a blueprint that outputs a fuel material (e.g. Charcoal Powder).</div>
+          </div>
+
+          <div class="field">
+            <label for="costFuelOutputSelect">Fuel output material</label>
+            <select id="costFuelOutputSelect" style="width: 100%;">
+              <option value="">(auto)</option>
+            </select>
+          </div>
+
+          <hr style="border: 0; border-top: 1px solid rgba(255,255,255,.08); margin: 14px 0;" />
+
+          <div class="field">
+            <label for="costFertilizerBlueprintSelect">Fertilizer cost blueprint</label>
+            <select id="costFertilizerBlueprintSelect" style="width: 100%;">
+              <option value="">(none)</option>
+            </select>
+            <div class="hint">Choose a blueprint that outputs a fertilizer material.</div>
+          </div>
+
+          <div class="field">
+            <label for="costFertilizerOutputSelect">Fertilizer output material</label>
+            <select id="costFertilizerOutputSelect" style="width: 100%;">
+              <option value="">(auto)</option>
+            </select>
+          </div>
+        </div>
+        <div class="dialog__footer">
+          <button class="btn" data-action="dialog:close">Cancel</button>
+          <button class="btn btn--primary" data-action="settings:save-cost">Save</button>
         </div>
       </div>
     </div>

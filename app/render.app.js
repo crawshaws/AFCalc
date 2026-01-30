@@ -256,9 +256,19 @@
               storageConnectionsChanged = currentConnectionCount !== storedConnectionCount;
             }
           }
+
+          // Blueprint instances depend heavily on external connection state (inputs/outputs, fuel ports).
+          // Recreate when connection count changes so ports/rates refresh immediately.
+          let blueprintConnectionsChanged = false;
+          if (pm.type === "blueprint_instance" || pm.type === "blueprint") {
+            const currentConnectionCount =
+              AF.state.build.connections.filter(c => c.fromMachineId === pm.id || c.toMachineId === pm.id).length;
+            const storedConnectionCount = parseInt(el.dataset.connectionCount || "0");
+            blueprintConnectionsChanged = currentConnectionCount !== storedConnectionCount;
+          }
           
           // If state changed, recreate the element
-          if (hasInsufficientInputs !== shouldHaveInsufficient || efficiencyChanged || storageConnectionsChanged) {
+          if (hasInsufficientInputs !== shouldHaveInsufficient || efficiencyChanged || storageConnectionsChanged || blueprintConnectionsChanged) {
             const newEl = createPlacedMachineElement(pm);
             el.replaceWith(newEl);
           }
@@ -327,51 +337,67 @@
         // Build inputs from port mappings - rates include child machine efficiency
         bpInputs = (placedMachine.portMappings?.inputs || []).map(mapping => {
           const childMachine = placedMachine.childMachines.find(m => m.id === mapping.internalMachineId);
-          if (!childMachine) return { materialId: mapping.materialId, rate: 0 };
+          if (!childMachine) return { materialId: mapping.materialId, rate: 0, kind: mapping.kind, internalMachineId: mapping.internalMachineId, internalPortIdx: mapping.internalPortIdx };
           
           const key = `${childMachine.id}::${String(mapping.internalPortIdx)}`;
           const maxRate = AF.state.calc?.port?.inputDemand?.get(key) ?? 0;
           const childEfficiency = childMachine.efficiency !== undefined ? childMachine.efficiency : 1.0;
           const actualRate = maxRate * childEfficiency;
-          return { materialId: mapping.materialId, rate: actualRate };
+          return { materialId: mapping.materialId, rate: actualRate, kind: mapping.kind, internalMachineId: mapping.internalMachineId, internalPortIdx: mapping.internalPortIdx };
         });
         
         // Build outputs from port mappings.
-        // Default behavior: show max output at current child efficiency.
-        // Special case: if this mapped port feeds one or more internal Export nodes, show the
-        // *actual exported flow* (sum of distributed connection rates into Export) instead.
+        // Capacity-only semantics:
+        // - capacity is net export capacity at 100% operation:
+        //   max output (from state.calc.port.outputRate) minus any mandatory internal consumption
+        //   fed from the same internal output port (e.g. self-fuel inside the blueprint).
+        // - external consumption is shown separately in the UI (see outputsHTML)
+        const exportChildIds = new Set(
+          (placedMachine.childMachines || []).filter(m => m.type === "export").map(m => m.id)
+        );
+        const getInternalConsumptionForOutput = (mapping) => {
+          if (!mapping || !Array.isArray(placedMachine.childConnections)) return 0;
+
+          const seen = new Set(); // `${toId}::${toPort}` to avoid double counting identical ports
+          let total = 0;
+
+          placedMachine.childConnections.forEach(c => {
+            const fromId = c._resolvedFromMachineId || c.fromMachineId;
+            const fromPort = c._resolvedFromPortIdx !== undefined ? c._resolvedFromPortIdx : c.fromPortIdx;
+            if (fromId !== mapping.internalMachineId) return;
+            if (String(fromPort) !== String(mapping.internalPortIdx)) return;
+
+            const toId = c._resolvedToMachineId || c.toMachineId;
+            if (toId === "__virtual_sink__" || c._isVirtualSinkConnection) return;
+            if (exportChildIds.has(toId)) return; // internal export sinks are optional, not mandatory consumption
+
+            const toPort = c._resolvedToPortIdx !== undefined ? c._resolvedToPortIdx : c.toPortIdx;
+            const portKey = `${toId}::${String(toPort)}`;
+            if (seen.has(portKey)) return;
+            seen.add(portKey);
+
+            // Use the calculator snapshot (no calc calls from render).
+            const demand = AF.state.calc?.port?.inputDemand?.get?.(portKey) ?? 0;
+            if (demand > 0.0001) total += demand;
+          });
+
+          return total;
+        };
+
         bpOutputs = (placedMachine.portMappings?.outputs || []).map(mapping => {
-          const childMachine = placedMachine.childMachines.find(m => m.id === mapping.internalMachineId);
-          if (!childMachine) return { materialId: mapping.materialId, rate: 0 };
-
-          const exportChildIds = new Set(
-            (placedMachine.childMachines || []).filter(m => m.type === "export").map(m => m.id)
-          );
-
-          let exportedRate = 0;
-          if (exportChildIds.size > 0 && Array.isArray(placedMachine.childConnections)) {
-            placedMachine.childConnections.forEach(c => {
-              const fromId = c._resolvedFromMachineId || c.fromMachineId;
-              const fromPortIdx = c._resolvedFromPortIdx !== undefined ? c._resolvedFromPortIdx : c.fromPortIdx;
-              const toId = c._resolvedToMachineId || c.toMachineId;
-
-              if (fromId !== childMachine.id) return;
-              if (String(fromPortIdx) !== String(mapping.internalPortIdx)) return;
-              if (!exportChildIds.has(toId)) return;
-
-              exportedRate += (c.actualRate ?? 0);
-            });
-          }
-
-          if (exportedRate > 0.0001) {
-            return { materialId: mapping.materialId, rate: exportedRate };
-          }
-
-          const key = `${childMachine.id}::${String(mapping.internalPortIdx)}`;
+          const key = `${mapping.internalMachineId}::${String(mapping.internalPortIdx)}`;
           const maxRate = AF.state.calc?.port?.outputRate?.get(key) ?? 0;
-          const childEfficiency = childMachine.efficiency !== undefined ? childMachine.efficiency : 1.0;
-          const actualRate = maxRate * childEfficiency;
-          return { materialId: mapping.materialId, rate: actualRate };
+          const internalConsumption = getInternalConsumptionForOutput(mapping);
+          const netMax = Math.max(0, maxRate - internalConsumption);
+          // For physical blueprint instances, the calculator already applies blueprint quantity (×count)
+          // to internal child port rates. Don't multiply again here.
+          const capacityRate = netMax;
+          return {
+            materialId: mapping.materialId,
+            capacityRate,
+            internalMachineId: mapping.internalMachineId,
+            internalPortIdx: mapping.internalPortIdx,
+          };
         });
       } else {
         // Old black box model (backward compatibility)
@@ -402,15 +428,21 @@
         if (machineData) {
           if (machineData.kind === "heating_device") {
             hasFurnaces = true;
-            // Calculate fuel consumption for this machine
-            let heatP = machineData.baseHeatConsumptionP || 0;
-            (machine.toppers || []).forEach(topper => {
-              const topperMachine = AF.core.getMachineById(topper.machineId);
-              if (topperMachine) {
-                heatP += topperMachine.heatConsumptionP || 0;
-              }
-            });
-            totalFuelConsumption += heatP;
+            // Prefer calculator snapshot (already includes blueprint quantity multipliers)
+            const ui = AF.state.calc?.uiByMachineId?.get?.(machine.id);
+            if (usePhysicalModel && ui && ui.kind === "heating_device") {
+              totalFuelConsumption += Number(ui.totalHeatP) || 0;
+            } else {
+              // Fallback: base heat only (old model)
+              let heatP = machineData.baseHeatConsumptionP || 0;
+              (machine.toppers || []).forEach(topper => {
+                const topperMachine = AF.core.getMachineById(topper.machineId);
+                if (topperMachine) {
+                  heatP += topperMachine.heatConsumptionP || 0;
+                }
+              });
+              totalFuelConsumption += heatP;
+            }
           }
           if (machineData.kind === "nursery") {
             hasNurseries = true;
@@ -426,7 +458,8 @@
       bpOutputs.forEach(output => {
         const material = AF.core.getMaterialById(output.materialId);
         if (material && material.kind === "fertilizer") {
-          totalFertilizerProduction += output.rate;
+          const cap = usePhysicalModel ? (output.capacityRate || 0) : ((output.rate || 0) * count);
+          totalFertilizerProduction += cap;
         }
       });
       
@@ -437,16 +470,29 @@
       
       // Build input ports HTML
       const inputsHTML = bpInputs.map((input, idx) => {
-        const material = AF.core.getMaterialById(input.materialId);
-        const materialName = material ? material.name : "Unknown";
+        const isFuel = input && (input.kind === "fuel" || input.materialId == null);
+        const material = !isFuel ? AF.core.getMaterialById(input.materialId) : null;
+
+        // Fuel: show heat requirement (P) in the label, and fuel items/min in the rate when connected.
+        let fuelP = 0;
+        if (isFuel && input.internalMachineId) {
+          const ui = AF.state.calc?.uiByMachineId?.get?.(input.internalMachineId);
+          if (ui && ui.kind === "heating_device") fuelP = Number(ui.totalHeatP) || 0;
+        }
+        if (!usePhysicalModel) fuelP *= (placedMachine.count || 1);
+
+        const materialName = isFuel ? `Fuel (${fuelP.toFixed(1)}P)` : (material ? material.name : "Unknown");
         // For physical model, rate already includes efficiency from child machines
         // For old model, multiply by count and efficiency
         const rate = usePhysicalModel ? input.rate : (input.rate * count * efficiency);
+        const rateStr = isFuel
+          ? (rate > 0.01 ? `${rate.toFixed(2)}/min` : "—")
+          : `${rate.toFixed(2)}/min`;
         return `
-          <div class="buildPort buildPort--input" data-input-port="${idx}" title="${materialName} - ${rate.toFixed(2)}/min">
+          <div class="buildPort buildPort--input" data-input-port="${idx}" title="${materialName} - ${rateStr}">
             <div class="buildPort__dot"></div>
             <div class="buildPort__label">${escapeHtml(materialName)}</div>
-            <div class="buildPort__rate">${rate.toFixed(2)}/min</div>
+            <div class="buildPort__rate">${rateStr}</div>
           </div>
         `;
       }).join("");
@@ -455,13 +501,35 @@
       const outputsHTML = bpOutputs.map((output, idx) => {
         const material = AF.core.getMaterialById(output.materialId);
         const materialName = material ? material.name : "Unknown";
-        // For physical model, rate already includes efficiency from child machines
-        // For old model, multiply by count and efficiency
-        const rate = usePhysicalModel ? output.rate : (output.rate * count * efficiency);
+        // Capacity-only (green). For old model, capacity is bpData.outputs rate * count (ignore efficiency).
+        const capacity = usePhysicalModel ? (output.capacityRate || 0) : ((output.rate || 0) * count);
+
+        // External consumption (red): sum of actual rates leaving the blueprint port.
+        // Only meaningful for physical model (old model doesn't have resolved internals).
+        let consumed = 0;
+        if (usePhysicalModel) {
+          AF.state.build.connections.forEach(c => {
+            if (c.fromMachineId !== placedMachine.id) return;
+            if (String(c.fromPortIdx) !== String(idx)) return;
+            consumed += (c.actualRate ?? 0);
+          });
+        }
+
+        const capStr = `${capacity.toFixed(2)}/min`;
+        const consumedStr = `${consumed.toFixed(2)}/min`;
+        const isBalanced = consumed > 0.01 && Math.abs(consumed - capacity) <= 0.01;
         return `
-          <div class="buildPort buildPort--output" data-output-port="${idx}" title="${materialName} - ${rate.toFixed(2)}/min">
+          <div class="buildPort buildPort--output" data-output-port="${idx}" title="${materialName} - cap ${capStr}${consumed > 0.01 ? `, consumed ${consumed.toFixed(2)}/min` : ''}">
             <div class="buildPort__label">${escapeHtml(materialName)}</div>
-            <div class="buildPort__rate">${rate.toFixed(2)}/min</div>
+            <div class="buildPort__rate">
+              ${
+                // If capacity and demand match, show a single neutral rate (like standard cards).
+                isBalanced
+                  ? `${capStr}`
+                  : `<span style="color: var(--ok)">${capStr}</span>` +
+                    (consumed > 0.01 ? `<span style="color: var(--danger); margin-left: 6px;">-${consumedStr}</span>` : ``)
+              }
+            </div>
             <div class="buildPort__dot"></div>
           </div>
         `;
@@ -471,7 +539,7 @@
       let statsHTML = "";
       
       if (hasFurnaces) {
-        const fuelConsumption = totalFuelConsumption * count;
+        const fuelConsumption = usePhysicalModel ? totalFuelConsumption : (totalFuelConsumption * count);
         statsHTML += `
           <div class="buildMachine__stats">
             <div class="buildMachine__stat">
@@ -483,7 +551,7 @@
       }
       
       if (hasNurseries) {
-        const plantOutput = plantOutputRate * count;
+        const plantOutput = usePhysicalModel ? plantOutputRate : (plantOutputRate * count);
         statsHTML += `
           <div class="buildMachine__stats">
             <div class="buildMachine__stat">
@@ -495,7 +563,7 @@
       }
       
       if (totalFertilizerProduction > 0) {
-        const fertilizerProduction = totalFertilizerProduction * count;
+        const fertilizerProduction = usePhysicalModel ? totalFertilizerProduction : (totalFertilizerProduction * count);
         const nurseriesSupported = Math.floor(fertilizerProduction / 4.17);
         statsHTML += `
           <div class="buildMachine__stats">
@@ -738,6 +806,7 @@
       const growthTime = ui && ui.kind === "nursery" ? (ui.growthTime || 0) : 0;
       const nurseriesPerBelt = ui && ui.kind === "nursery" ? (ui.nurseriesPerBelt || 0) : 0;
       const fertilizerDuration = ui && ui.kind === "nursery" ? (ui.fertilizerDuration || 0) : 0;
+      const hasNoFertilizer = ui && ui.kind === "nursery" ? !!ui.hasNoFertilizer : (!isConnected && !placedMachine.fertilizerId);
       
       // Plant selector (only show plants)
       const plantOptions = AF.state.db.materials
@@ -774,6 +843,7 @@
         <div class="buildMachine__header">
           <div style="display: flex; align-items: center; gap: 8px; flex: 1;">
             <div class="buildMachine__title">Nursery</div>
+            ${plantId && hasNoFertilizer ? '<span class="buildMachine__warning" title="No Fertiliser selected: choose one in the dropdown or connect a fertiliser input">⚠️</span>' : ''}
             <input 
               type="number" 
               class="buildMachine__countInput" 
@@ -810,7 +880,7 @@
               Output: ${plantOutputRate.toFixed(2)} ${plant.name}/min<br>
               Requires: ${fertilizerInputRate.toFixed(2)} ${fertilizerMaterial.name}/min<br>
               1 ${fertilizerMaterial.name} lasts ${fertilizerDuration.toFixed(1)}s<br>
-            <strong>One belt (${state.calc?.skill?.conveyorSpeed ?? 0}/min) supports ${nurseriesPerBelt} nurseries</strong>
+            <strong>One belt (${AF.state.calc?.skill?.conveyorSpeed ?? 0}/min) supports ${nurseriesPerBelt} nurseries</strong>
             ` : plant && !isConnected ? `Select fertilizer to see production rates` : plant ? `Connect fertilizer to see production rates` : `Select a plant to begin`}
           </div>
         </div>
@@ -1297,9 +1367,18 @@
   /**
    * Get obstacle rectangles for pathfinding (machine cards with clearance)
    */
-  function getObstacles(excludeMachineIds = []) {
-    const CLEARANCE = 16;
+  function getObstacles(excludeMachineIds = [], notches = []) {
+    // Keep routed connections away from card edges.
+    // This is not CSS padding; it's a routing "no-go" buffer so lines don't graze cards.
+    const CLEARANCE = 28;
     const obstacles = [];
+
+    // Index notches by machineId for quick lookup
+    const notchByMachineId = new Map();
+    (notches || []).forEach(n => {
+      if (!n || !n.machineId) return;
+      notchByMachineId.set(n.machineId, n);
+    });
     
     // Use machine data directly for world coordinates
     AF.state.build.placedMachines.forEach(pm => {
@@ -1313,13 +1392,63 @@
       // Use offsetWidth/Height which gives element dimensions without transform effects
       const worldWidth = machineEl.offsetWidth;
       const worldHeight = machineEl.offsetHeight;
-      
-      obstacles.push({
-        x1: pm.x - CLEARANCE,
-        y1: pm.y - CLEARANCE,
-        x2: pm.x + worldWidth + CLEARANCE,
-        y2: pm.y + worldHeight + CLEARANCE,
-      });
+
+      const ox1 = pm.x - CLEARANCE;
+      const oy1 = pm.y - CLEARANCE;
+      const ox2 = pm.x + worldWidth + CLEARANCE;
+      const oy2 = pm.y + worldHeight + CLEARANCE;
+
+      const notch = notchByMachineId.get(pm.id) || null;
+      if (!notch) {
+        obstacles.push({ x1: ox1, y1: oy1, x2: ox2, y2: oy2 });
+        return;
+      }
+
+      // Create a small "port notch" so wires can enter/exit the card at the port,
+      // but all other segments still respect the no-go clearance.
+      const side = notch.side; // "right" | "left"
+      const cy = Number(notch.y);
+      const halfH = Number.isFinite(notch.halfHeight) ? Number(notch.halfHeight) : 18;
+      const extraW = Number.isFinite(notch.extraWidth) ? Number(notch.extraWidth) : 32;
+
+      const ny1 = Math.max(oy1, cy - halfH);
+      const ny2 = Math.min(oy2, cy + halfH);
+
+      if (!(ny2 > ny1)) {
+        obstacles.push({ x1: ox1, y1: oy1, x2: ox2, y2: oy2 });
+        return;
+      }
+
+      if (side === "right") {
+        // Notch near the right edge where the wire exits
+        const nx1 = Math.max(ox1, (Number(notch.x) || ox2) - 2);
+        const nx2 = Math.min(ox2, (Number(notch.x) || ox2) + extraW);
+
+        // Left block (full height) to keep other routes away from the card
+        if (nx1 > ox1 + 0.5) obstacles.push({ x1: ox1, y1: oy1, x2: nx1, y2: oy2 });
+        // Right-top
+        if (ny1 > oy1 + 0.5) obstacles.push({ x1: nx1, y1: oy1, x2: ox2, y2: ny1 });
+        // Right-bottom
+        if (oy2 > ny2 + 0.5) obstacles.push({ x1: nx1, y1: ny2, x2: ox2, y2: oy2 });
+        return;
+      }
+
+      if (side === "left") {
+        // Notch near the left edge where the wire enters
+        const nx2 = Math.min(ox2, (Number(notch.x) || ox1) + 2);
+        const nx1 = Math.max(ox1, (Number(notch.x) || ox1) - extraW);
+
+        // Right block (full height)
+        if (ox2 > nx2 + 0.5) obstacles.push({ x1: nx2, y1: oy1, x2: ox2, y2: oy2 });
+        // Left-top
+        if (ny1 > oy1 + 0.5) obstacles.push({ x1: ox1, y1: oy1, x2: nx2, y2: ny1 });
+        // Left-bottom
+        if (oy2 > ny2 + 0.5) obstacles.push({ x1: ox1, y1: ny2, x2: nx2, y2: oy2 });
+        return;
+      }
+
+      // Fallback if unknown side
+      obstacles.push({ x1: ox1, y1: oy1, x2: ox2, y2: oy2 });
     });
     
     return obstacles;
@@ -1653,9 +1782,26 @@
       // Determine if this is a loopback connection (output right of input)
       const isLoopback = x1 > x2;
       
-      // For loopback, keep target as obstacle to route around it; otherwise exclude both
-      const excludeIds = isLoopback ? [conn.fromMachineId] : [conn.fromMachineId, conn.toMachineId];
-      const obstacles = getObstacles(excludeIds);
+      // Cards should always be treated as obstacles (with clearance),
+      // except for a small "notch" at the specific ports for entry/exit.
+      const obstacles = getObstacles([], [
+        {
+          machineId: conn.fromMachineId,
+          side: "right",
+          x: x1,
+          y: y1,
+          halfHeight: (fromPort.offsetHeight / 2) + 10,
+          extraWidth: 28 + 16 + 28, // clearance + buffer + extra
+        },
+        {
+          machineId: conn.toMachineId,
+          side: "left",
+          x: x2,
+          y: y2,
+          halfHeight: (toPort.offsetHeight / 2) + 10,
+          extraWidth: 28 + 16 + 28,
+        },
+      ]);
       
       const path = findPath(x1, y1, x2, y2, obstacles, fromCardRight, toCardLeft);
       
@@ -1687,13 +1833,26 @@
       const sourcePlacedMachine = AF.state.build.placedMachines.find(pm => pm.id === conn.fromMachineId);
       const targetPlacedMachine = AF.state.build.placedMachines.find(pm => pm.id === conn.toMachineId);
       const connectionRate = getConnectionRate(conn);
-      const targetKey = targetPlacedMachine ? `${targetPlacedMachine.id}::${String(conn.toPortIdx)}` : null;
-      const targetMaxDemand = targetKey ? (AF.state.calc?.port?.inputDemand?.get(targetKey) ?? 0) : 0;
+      // Determine target max demand. For blueprints, the rendered port is an external index,
+      // but the demand snapshot is stored on the resolved internal child port.
+      let targetMaxDemand = 0;
+      let resolvedTargetForDemand = null;
+      if (targetPlacedMachine) {
+        let demandKey = `${targetPlacedMachine.id}::${String(conn.toPortIdx)}`;
+        if ((targetPlacedMachine.type === "blueprint" || targetPlacedMachine.type === "blueprint_instance") && targetPlacedMachine.portMappings) {
+          const portIdxNum = parseInt(conn.toPortIdx);
+          const mapping = Number.isFinite(portIdxNum) ? targetPlacedMachine.portMappings.inputs?.[portIdxNum] : null;
+          if (mapping && mapping.internalMachineId) {
+            demandKey = `${mapping.internalMachineId}::${String(mapping.internalPortIdx)}`;
+            resolvedTargetForDemand = AF.core.findMachineInTree(mapping.internalMachineId);
+          }
+        }
+        targetMaxDemand = AF.state.calc?.port?.inputDemand?.get(demandKey) ?? 0;
+      }
       
       // Calculate ACTUAL demand based on target machine's efficiency
-      const targetEfficiency = targetPlacedMachine && targetPlacedMachine.efficiency !== undefined 
-        ? targetPlacedMachine.efficiency 
-        : 1.0;
+      const effSource = resolvedTargetForDemand || targetPlacedMachine;
+      const targetEfficiency = effSource && effSource.efficiency !== undefined ? effSource.efficiency : 1.0;
       const targetDemand = targetMaxDemand * targetEfficiency;
       
       // Check if insufficient: get ALL connections to this same input port
@@ -1719,8 +1878,13 @@
       if (sourcePlacedMachine && targetPlacedMachine) {
         const outputKey = `${sourcePlacedMachine.id}::${String(conn.fromPortIdx)}`;
         const inputKey = `${targetPlacedMachine.id}::${String(conn.toPortIdx)}`;
-        const outputMaterialId = AF.state.calc?.port?.outputMaterial?.get(outputKey) ?? null;
-        const inputMaterialId = AF.state.calc?.port?.inputMaterial?.get(inputKey) ?? null;
+        // Prefer snapshot, but fall back to core mapping (required for blueprint external ports).
+        const outputMaterialId =
+          (AF.state.calc?.port?.outputMaterial?.get(outputKey) ?? null) ??
+          (AF.core.getMaterialIdFromPort?.(sourcePlacedMachine, conn.fromPortIdx, "output") ?? null);
+        const inputMaterialId =
+          (AF.state.calc?.port?.inputMaterial?.get(inputKey) ?? null) ??
+          (AF.core.getMaterialIdFromPort?.(targetPlacedMachine, conn.toPortIdx, "input") ?? null);
         if (outputMaterialId && inputMaterialId && outputMaterialId !== inputMaterialId) {
           isMaterialMismatch = true;
         }
@@ -1748,7 +1912,9 @@
       // Add connection info label (material, rate, direction)
       if (sourcePlacedMachine) {
         const materialKey = `${sourcePlacedMachine.id}::${String(conn.fromPortIdx)}`;
-        const materialId = AF.state.calc?.port?.outputMaterial?.get(materialKey) ?? null;
+        const materialId =
+          (AF.state.calc?.port?.outputMaterial?.get(materialKey) ?? null) ??
+          (AF.core.getMaterialIdFromPort?.(sourcePlacedMachine, conn.fromPortIdx, "output") ?? null);
         const material = materialId ? AF.core.getMaterialById(materialId) : null;
         const rate = connectionRate; // Use per-connection rate
         
@@ -1798,7 +1964,7 @@
           
           // Calculate conveyors needed
           const beltSpeed = AF.state.calc?.skill?.conveyorSpeed ?? 0;
-          const conveyorsNeeded = Math.ceil(rate / beltSpeed);
+          const conveyorsNeeded = beltSpeed > 0.0001 ? Math.ceil(rate / beltSpeed) : 1;
           
           // Build label text
           let labelText = `${material.name} ${arrow} ${rate.toFixed(2)}/min (${conveyorsNeeded}x)`;

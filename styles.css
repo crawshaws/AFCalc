@@ -21,6 +21,9 @@ body{
   font-family:var(--sans);
   background: var(--bg);
   color: var(--text);
+  /* Hint to the browser that this app is dark-themed.
+     Improves native form control dropdown colors on Windows/Chromium. */
+  color-scheme: dark;
 }
 
 .hidden{ display:none !important; }
@@ -196,6 +199,95 @@ body{
   background: rgba(90,162,255,.14);
 }
 
+/* =========================
+   Production workspace tabs
+   ========================= */
+
+.workspaceTabs{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding: 10px 12px 0;
+}
+
+.workspaceTabs__list{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.workspaceTab{
+  appearance:none;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: 12px;
+  cursor:pointer;
+  font-weight: 650;
+  font-size: 12px;
+  max-width: 240px;
+  min-width: 90px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.workspaceTab:hover{
+  background: rgba(255,255,255,.08);
+}
+.workspaceTab.is-active{
+  border-color: rgba(90,162,255,.45);
+  background: rgba(90,162,255,.14);
+}
+.workspaceTab__name{
+  overflow:hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.workspaceTab__close{
+  flex: 0 0 auto;
+  border-radius: 10px;
+  padding: 2px 7px;
+  font-weight: 900;
+  opacity: 0.85;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+}
+.workspaceTab__close:hover{
+  opacity: 1;
+  border-color: rgba(255,90,106,.45);
+  background: rgba(255,90,106,.14);
+}
+
+.workspaceTabs__add{
+  padding: 6px 10px;
+  border-radius: 12px;
+  font-weight: 800;
+}
+
+.canvas__title{
+  display:flex;
+  align-items:center;
+  gap: 8px;
+}
+.canvas__titleName{
+  font-weight: 800;
+}
+.canvas__titleRename{
+  margin-left: 2px;
+  opacity: 0.85;
+}
+.canvas__titleRename:hover{
+  opacity: 1;
+}
+
 .panel{
   padding: 10px;
   overflow:auto;
@@ -359,6 +451,15 @@ body{
   color: var(--text);
   outline:none;
 }
+.field select{
+  color-scheme: dark;
+}
+.field select option,
+.field select optgroup{
+  background: var(--panel);
+  color: var(--text);
+}
+.field select optgroup{ color: var(--muted); }
 .field textarea{ min-height: 70px; resize: vertical; }
 .checkboxRow{
   display:flex;
@@ -621,6 +722,18 @@ body{
   background: rgba(0,0,0,.22);
   color: var(--text);
   font-size: 13px;
+  color-scheme: dark;
+}
+.buildMachine__recipeSelect option,
+.buildMachine__recipeSelect optgroup{
+  background: var(--panel);
+  color: var(--text);
+}
+.buildMachine__recipeSelect optgroup{ color: var(--muted); }
+.buildMachine__recipeSelect:focus{
+  outline: none;
+  border-color: rgba(90,162,255,.55);
+  box-shadow: 0 0 0 2px rgba(90,162,255,.18);
 }
 .buildMachine__ports{
   padding: 8px 12px 12px;

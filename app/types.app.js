@@ -83,7 +83,18 @@
  */
 
 /**
- * @typedef {{ materialId: string, rate: number }} BlueprintPortSpec
+ * @typedef {{
+ *   // Normal ports: materialId + rate
+ *   materialId: (string|null),
+ *   rate: number,
+ *
+ *   // Special ports
+ *   kind: ("material"|"fuel"|undefined),
+ *
+ *   // Optional direct mapping hints (used for special ports like fuel)
+ *   internalBlueprintMachineId: (string|undefined),
+ *   internalPortIdx: (string|number|undefined),
+ * }} BlueprintPortSpec
  */
 
 /**
@@ -123,8 +134,8 @@
 /**
  * @typedef {{
  *   // Port index -> mapping
- *   inputs: (Array<{ materialId: string, internalMachineId: string, internalPortIdx: number }> | undefined),
- *   outputs: (Array<{ materialId: string, internalMachineId: string, internalPortIdx: number }> | undefined),
+ *   inputs: (Array<{ materialId: (string|null), internalMachineId: string, internalPortIdx: (string|number), kind?: ("material"|"fuel") }> | undefined),
+ *   outputs: (Array<{ materialId: (string|null), internalMachineId: string, internalPortIdx: (string|number), kind?: ("material"|"fuel") }> | undefined),
  * }} BlueprintPortMappings
  */
 
@@ -331,15 +342,43 @@
 
 /**
  * @typedef {{
+ *   version: number,
+ *   costBlueprints: {
+ *     fuel: { blueprintId: (string|null), outputMaterialId: (string|null) },
+ *     fertilizer: { blueprintId: (string|null), outputMaterialId: (string|null) },
+ *   },
+ * }} Settings
+ */
+
+/**
+ * @typedef {{
  *   db: Db,
  *   calc: CalcState,
  *   ui: UIState,
  *   build: BuildState,
+ *   workspaces: WorkspacesState,
  *   blueprintEditStack: Array<BlueprintEditStackFrame>,
  *   currentBlueprintEdit: (BlueprintEditContext|null),
  *   blueprintMachineCountCache: Object,
  *   skills: SkillsState,
+ *   settings: Settings,
  * }} AppState
+ */
+
+/**
+ * @typedef {{
+ *   id: string,
+ *   name: string,
+ *   build: { placedMachines: Array<PlacedMachine>, connections: Array<Connection>, camera: CameraState }
+ * }} WorkspaceTab
+ */
+
+/**
+ * @typedef {{
+ *   version: number,
+ *   activeId: (string|null),
+ *   tabs: Array<WorkspaceTab>,
+ * }} WorkspacesState
  */
 
 /**
@@ -374,6 +413,7 @@
  *   BUILD_STORAGE_KEY: string,
  *   SKILLS_STORAGE_KEY: string,
  *   UI_PREFS_STORAGE_KEY: string,
+ *   WORKSPACES_STORAGE_KEY: string,
  *   SCHEMA_VERSION: number,
  *   CONVEYOR_SPEED: number,
  * }} AFConsts
@@ -392,6 +432,13 @@
  *   importFullState: (file: File) => Promise<Array<ValidationIssue>>,
  *   saveBuild: () => void,
  *   loadBuild: () => { placedMachines: Array<PlacedMachine>, connections: Array<Connection>, camera: CameraState },
+ *   saveWorkspaces: () => void,
+ *   loadWorkspaces: () => void,
+ *   getActiveWorkspaceTab: () => (WorkspaceTab|null),
+ *   createWorkspaceTab: (opts: { name: string, build?: any, switchTo?: boolean }) => WorkspaceTab,
+ *   renameWorkspaceTab: (tabId: string, name: string) => boolean,
+ *   switchWorkspaceTab: (tabId: string) => boolean,
+ *   closeWorkspaceTab: (tabId: string) => boolean,
  *   saveSkills: () => void,
  *   loadSkills: () => SkillsState,
  *   saveUIPrefs: () => void,
