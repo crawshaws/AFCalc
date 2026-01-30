@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "database": {
+    "version": 1,
+    "meta": {
+      "createdAt": "2026-01-30T18:50:51.052Z",
+      "updatedAt": "2026-01-30T18:50:51.052Z"
+    },
+    "materials": [],
+    "machines": [],
+    "recipes": [],
+    "blueprints": []
+  },
+  "build": {
+    "placedMachines": [],
+    "connections": [],
+    "camera": {
+      "x": 0,
+      "y": 0,
+      "zoom": 1
+    }
+  },
+  "workspace": {
+    "id": "ws_19c103e672c_a153384d0ce048",
+    "name": "New Production 1"
+  },
+  "skills": {
+    "conveyorSpeed": 0,
+    "throwingSpeed": 0,
+    "machineEfficiency": 0,
+    "alchemyEfficiency": 0,
+    "fuelEfficiency": 0,
+    "fertilizerEfficiency": 0,
+    "shopProfit": 0
+  }
+}

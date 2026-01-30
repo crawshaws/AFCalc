@@ -1,19 +1,13 @@
 # Alchemy Factory Planner - Project Documentation
 
 ## Project Overview
-
-
-**IMPORTANT**
- - This is a static web page with css and js assets. NOT A NodeJS app and has no special requirements to run other than opening the html file
- - If you wish to run a command, I would like you to tell be PRIOR to running the command why you want to run it and the ask to run the command. Without this, I have no context to know if I should actually allow the running of your commands
- - If new data structures are created/updated or the application structure changes (namespaces etc), PLEASE ensure the types.app.js file is kept up to date ALWAYS.
-
 **Alchemy Factory Planner** is a standalone, offline web application for planning and optimizing factory layouts in the game "Alchemy Factory." The application allows users to:
 - Define a database of materials, machines, and recipes
 - Design factory layouts on a visual canvas
 - Calculate production flows and rates
 - Apply skill point modifiers to optimize efficiency
 - Import/export configurations as JSON
+- WORK IN PROGRESS
 
 **Technology Stack:**
 - Pure HTML, CSS, and JavaScript (no frameworks)
@@ -407,6 +401,17 @@ For cyclical/self-fed layouts where a machine has real outgoing connections but 
 | `af_planner_workspaces_v1` | Production workspaces (tabs) + per-tab canvas state | JSON |
 | `af_planner_build_v1` | **Legacy mirror** of the active workspace build (backward compatibility) | JSON |
 | `af_planner_skills_v1` | Skill point allocations | JSON |
+| `af_planner_settings_v1` | Cost settings and other app settings | JSON |
+
+### First-run seeded state (bundled default)
+
+On a **true first run** (i.e. when none of the core state keys above exist in `localStorage`), the app will:
+
+- Fetch `./alchemy-factory-state.json`
+- Feed it into the existing `File → Import Data…` full-state import routine
+- Persist the imported database/build/skills to `localStorage`
+
+After that, **`localStorage` always takes priority**; the bundled file is only used when local state is completely absent (e.g. user clears all site data).
 
 ### Import/Export
 

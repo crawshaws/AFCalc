@@ -1508,12 +1508,57 @@
     };
   })();
 
+  /**
+   * Returns true if any persistent "state" exists in localStorage.
+   * (UI prefs are intentionally ignored; we only care about actual app data.)
+   */
+  function hasAnyPersistedState() {
+    try {
+      return Boolean(
+        localStorage.getItem(STORAGE_KEY) ||
+          localStorage.getItem(WORKSPACES_STORAGE_KEY) ||
+          localStorage.getItem(BUILD_STORAGE_KEY) ||
+          localStorage.getItem(SKILLS_STORAGE_KEY) ||
+          localStorage.getItem(SETTINGS_STORAGE_KEY)
+      );
+    } catch {
+      // If localStorage is unavailable for any reason, treat as "has state"
+      // so we don't attempt network/file fetches unexpectedly.
+      return true;
+    }
+  }
+
+  /**
+   * Fetch `./alchemy-factory-state.json` and run it through the existing import routine.
+   * This is used only on first run (when no persisted state exists).
+   */
+  async function bootstrapFromBundledState() {
+    AF.ui?.setStatus?.("No local data found. Loading bundled starter state…", "info");
+
+    const res = await fetch("./alchemy-factory-state.json", { cache: "no-store" });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch bundled state (HTTP ${res.status})`);
+    }
+
+    const text = await res.text();
+
+    // `importFullState` only needs a `.text()` method, so we can provide a lightweight shim.
+    await importFullState({
+      text: async () => text,
+    });
+  }
 
 
 
 
 
-  function init() {
+
+  async function init() {
+    // First run bootstrap:
+    // If there is no persisted state at all, pull down the bundled starter state file and
+    // feed it through the existing import routine. From that point on, localStorage wins.
+    const shouldBootstrapFromBundledState = !hasAnyPersistedState();
+
     state.db = loadDb();
     loadWorkspaces();
     const buildData = loadBuild();
@@ -1560,6 +1605,17 @@
     AF.calculator.init();
     AF.ui.init();
     AF.render.init();
+
+    if (shouldBootstrapFromBundledState) {
+      // Do not block startup if this fails (e.g. file:// mode, missing asset, offline).
+      try {
+        await bootstrapFromBundledState();
+      } catch (err) {
+        console.warn("[AF] Bundled starter state bootstrap failed:", err);
+        AF.ui?.setStatus?.("No local data found, but bundled starter state could not be loaded. Starting empty.", "warn");
+      }
+    }
+
     // Initial calculation + render (coalesced)
     AF.scheduler.flushNow();
 
