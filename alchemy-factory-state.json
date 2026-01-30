@@ -4,11 +4,1004 @@
     "version": 1,
     "meta": {
       "createdAt": "2026-01-30T18:50:51.052Z",
-      "updatedAt": "2026-01-30T18:50:51.052Z"
+      "updatedAt": "2026-01-30T19:22:17.420Z"
     },
-    "materials": [],
-    "machines": [],
-    "recipes": [],
+    "materials": [
+      {
+        "id": "mat_19be820b99d_053e5c3443235",
+        "name": "Wood",
+        "buyPrice": 200,
+        "salePrice": null,
+        "isFuel": true,
+        "fuelValue": 2000,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19be82124b0_0ac30d451be348",
+        "name": "Plank",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": true,
+        "fuelValue": 20,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 200
+      },
+      {
+        "id": "mat_19be8217b17_337a74790e45e8",
+        "name": "Charcoal",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": true,
+        "fuelValue": 40,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19be821c709_aecec32eef4d8",
+        "name": "Charcoal Powder",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": true,
+        "fuelValue": 48,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 200
+      },
+      {
+        "id": "mat_19be854f5d8_feaee1cb69d218",
+        "name": "Large Wooden Gear",
+        "buyPrice": null,
+        "salePrice": 5,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 100
+      },
+      {
+        "id": "mat_19be8555516_9d650601896ef8",
+        "name": "Small Wooden Gear",
+        "buyPrice": null,
+        "salePrice": 8,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19be8590491_e1c257c08f77c",
+        "name": "Limestone",
+        "buyPrice": 600,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19be85bf439_0e2a592cbbafa8",
+        "name": "Stone",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19be8617728_533a4d2d1bd9a",
+        "name": "Quicklime",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19be8619e45_0fe13d4f5e9aa",
+        "name": "Quicklime Powder",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19be8651b15_67928992ba248",
+        "name": "Sand",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19be86eb8ed_2c7209d123eed",
+        "name": "Glass",
+        "buyPrice": null,
+        "salePrice": 75,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19be86fd0c7_ebcb2431cd1fd8",
+        "name": "Clay",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19be8710380_5e96425a5cc68",
+        "name": "Brick",
+        "buyPrice": null,
+        "salePrice": 70,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19be8716a68_d00c3922ce0e6",
+        "name": "Basic Fertilizer",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": true,
+        "fertilizerNutrientValue": 144,
+        "fertilizerMaxFertility": 12,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 100
+      },
+      {
+        "id": "mat_19be8721924_76b2bc813f8bb8",
+        "name": "Plant Ash",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19bea24995c_c0a1fc9215ee58",
+        "name": "Coal Ore",
+        "buyPrice": 4800,
+        "salePrice": null,
+        "isFuel": true,
+        "fuelValue": 30000,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19bea24dcb9_c8378e9c6b5be",
+        "name": "Coal",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": true,
+        "fuelValue": 540,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19bea262a65_7fc8bd9cfc9988",
+        "name": "Coke",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": true,
+        "fuelValue": 600,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19bea42ee47_78c3977eacd4e8",
+        "name": "Coin",
+        "buyPrice": 1,
+        "salePrice": 1,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 1
+      },
+      {
+        "id": "mat_19bfc738590_a87f393f81e498",
+        "name": "Flax",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": true,
+        "plantRequiredNutrient": 24,
+        "stackSize": 200
+      },
+      {
+        "id": "mat_19bfc73d1aa_f432a86f92025",
+        "name": "Sage",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": true,
+        "plantRequiredNutrient": 36,
+        "stackSize": 200
+      },
+      {
+        "id": "mat_19bfc7583b2_7fe9ef0655d178",
+        "name": "Flax Fiber",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 200
+      },
+      {
+        "id": "mat_19bfc823a68_255b8b26de8608",
+        "name": "Linen Thread",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 200
+      },
+      {
+        "id": "mat_19bfc842fb9_054a1489379f18",
+        "name": "Linen",
+        "buyPrice": null,
+        "salePrice": null,
+        "isFuel": false,
+        "fuelValue": null,
+        "isFertilizer": false,
+        "fertilizerNutrientValue": null,
+        "fertilizerMaxFertility": null,
+        "isPlant": false,
+        "plantRequiredNutrient": null,
+        "stackSize": 50
+      }
+    ],
+    "machines": [
+      {
+        "id": "mac_19be82240fe_a2ed8c7eb2ebb",
+        "name": "Table Saw",
+        "inputs": 1,
+        "outputs": 1,
+        "requiresFurnace": false,
+        "heatConsumptionP": null,
+        "kind": "standard",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": null,
+        "footprintLength": null
+      },
+      {
+        "id": "mac_19be8238f43_5615225db5c7b8",
+        "name": "Grinder",
+        "inputs": 1,
+        "outputs": 1,
+        "requiresFurnace": false,
+        "heatConsumptionP": null,
+        "kind": "standard",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": null,
+        "footprintLength": null
+      },
+      {
+        "id": "mac_19be8331193_f48f5d5c24a51",
+        "name": "Crucible",
+        "inputs": 1,
+        "outputs": 1,
+        "requiresFurnace": true,
+        "heatConsumptionP": 4,
+        "kind": "standard",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": 1,
+        "footprintLength": 3
+      },
+      {
+        "id": "mac_19be8335fd3_df8291464c4de8",
+        "name": "Kiln",
+        "inputs": 1,
+        "outputs": 1,
+        "requiresFurnace": true,
+        "heatConsumptionP": 15,
+        "kind": "standard",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": 3,
+        "footprintLength": 3
+      },
+      {
+        "id": "mac_19be8339cfa_b9479524949918",
+        "name": "Smelter",
+        "inputs": 1,
+        "outputs": 1,
+        "requiresFurnace": true,
+        "heatConsumptionP": 15,
+        "kind": "standard",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": null,
+        "footprintLength": null
+      },
+      {
+        "id": "mac_19be840da8a_6c0863ca7f423",
+        "name": "Processor",
+        "inputs": 1,
+        "outputs": 1,
+        "requiresFurnace": false,
+        "heatConsumptionP": null,
+        "kind": "standard",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": null,
+        "footprintLength": null
+      },
+      {
+        "id": "mac_19be85ce8c8_82bebc7d084cb8",
+        "name": "Rock Crusher",
+        "inputs": 1,
+        "outputs": 1,
+        "requiresFurnace": false,
+        "heatConsumptionP": null,
+        "kind": "standard",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": null,
+        "footprintLength": null
+      },
+      {
+        "id": "mac_19be86d9ca7_3b746cfbaf8c58",
+        "name": "Assembler",
+        "inputs": 2,
+        "outputs": 1,
+        "requiresFurnace": false,
+        "heatConsumptionP": null,
+        "kind": "standard",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": null,
+        "footprintLength": null
+      },
+      {
+        "id": "mac_19bea27e444_fc74a7b6838a8",
+        "name": "Athanor",
+        "inputs": 2,
+        "outputs": 2,
+        "requiresFurnace": true,
+        "heatConsumptionP": 20,
+        "kind": "standard",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": null,
+        "footprintLength": null
+      },
+      {
+        "id": "mac_19bea4398f0_96d0c4cd96a038",
+        "name": "Purchasing Portal",
+        "inputs": 1,
+        "outputs": 1,
+        "requiresFurnace": false,
+        "heatConsumptionP": null,
+        "kind": "standard",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": null,
+        "footprintLength": null
+      },
+      {
+        "id": "mac_19bf98b8ed3_5d99f8c212c238",
+        "name": "Furnace",
+        "inputs": 1,
+        "outputs": 0,
+        "requiresFurnace": false,
+        "heatConsumptionP": null,
+        "kind": "heating_device",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": 3,
+        "heatingAreaLength": 3,
+        "footprintWidth": null,
+        "footprintLength": null
+      },
+      {
+        "id": "mac_19bfbf24bca_be1350fe6e112",
+        "name": "Small Storage Box",
+        "inputs": 1,
+        "outputs": 1,
+        "requiresFurnace": false,
+        "heatConsumptionP": null,
+        "kind": "storage",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": 2,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": null,
+        "footprintLength": null
+      },
+      {
+        "id": "mac_19bfbf28b47_0dc0c231fd772",
+        "name": "Medium Storage Box",
+        "inputs": 2,
+        "outputs": 2,
+        "requiresFurnace": false,
+        "heatConsumptionP": null,
+        "kind": "storage",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": 8,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": null,
+        "footprintLength": null
+      },
+      {
+        "id": "mac_19c00d86344_0c780e9d0618c8",
+        "name": "Nursery",
+        "inputs": 1,
+        "outputs": 1,
+        "requiresFurnace": false,
+        "heatConsumptionP": null,
+        "kind": "standard",
+        "baseHeatConsumptionP": 1,
+        "storageSlots": null,
+        "heatingAreaWidth": null,
+        "heatingAreaLength": null,
+        "footprintWidth": null,
+        "footprintLength": null
+      }
+    ],
+    "recipes": [
+      {
+        "id": "rec_19be8486b23_e014045a9c80e8",
+        "name": "Plank",
+        "machineId": "mac_19be82240fe_a2ed8c7eb2ebb",
+        "processingTimeSec": 400,
+        "inputs": [
+          {
+            "materialId": "mat_19be820b99d_053e5c3443235",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be82124b0_0ac30d451be348",
+            "items": 200
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be84c4901_2bd0e82522ed5",
+        "name": "Charcoal",
+        "machineId": "mac_19be8331193_f48f5d5c24a51",
+        "processingTimeSec": 4,
+        "inputs": [
+          {
+            "materialId": "mat_19be82124b0_0ac30d451be348",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be8217b17_337a74790e45e8",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be855cf03_1b466cf5600ec8",
+        "name": "Large Wooden Gear",
+        "machineId": "mac_19be8238f43_5615225db5c7b8",
+        "processingTimeSec": 6,
+        "inputs": [
+          {
+            "materialId": "mat_19be82124b0_0ac30d451be348",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be854f5d8_feaee1cb69d218",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be85698b3_1db17b3f615788",
+        "name": "Small Wooden Gear",
+        "machineId": "mac_19be840da8a_6c0863ca7f423",
+        "processingTimeSec": 12,
+        "inputs": [
+          {
+            "materialId": "mat_19be82124b0_0ac30d451be348",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be8555516_9d650601896ef8",
+            "items": 3
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be85d19ab_a288efa468b5d8",
+        "name": "Stone",
+        "machineId": "mac_19be85ce8c8_82bebc7d084cb8",
+        "processingTimeSec": 450,
+        "inputs": [
+          {
+            "materialId": "mat_19be8590491_e1c257c08f77c",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be85bf439_0e2a592cbbafa8",
+            "items": 150
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be860bd93_ed0a4763898cb8",
+        "name": "Quicklime",
+        "machineId": "mac_19be8331193_f48f5d5c24a51",
+        "processingTimeSec": 9,
+        "inputs": [
+          {
+            "materialId": "mat_19be85bf439_0e2a592cbbafa8",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be8617728_533a4d2d1bd9a",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be862b3ba_af4399dac20fd8",
+        "name": "Quicklime Powder",
+        "machineId": "mac_19be8238f43_5615225db5c7b8",
+        "processingTimeSec": 9,
+        "inputs": [
+          {
+            "materialId": "mat_19be8617728_533a4d2d1bd9a",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be8619e45_0fe13d4f5e9aa",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be865529b_d262062e2ecf18",
+        "name": "Sand",
+        "machineId": "mac_19be8238f43_5615225db5c7b8",
+        "processingTimeSec": 12,
+        "inputs": [
+          {
+            "materialId": "mat_19be85bf439_0e2a592cbbafa8",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be8651b15_67928992ba248",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be86e0983_3d7c6f116c716",
+        "name": "Clay",
+        "machineId": "mac_19be86d9ca7_3b746cfbaf8c58",
+        "processingTimeSec": 4,
+        "inputs": [
+          {
+            "materialId": "mat_19be821c709_aecec32eef4d8",
+            "items": 2
+          },
+          {
+            "materialId": "mat_19be8651b15_67928992ba248",
+            "items": 4
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be86fd0c7_ebcb2431cd1fd8",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be8706c77_1d3322f3b430a",
+        "name": "Brick",
+        "machineId": "mac_19be8335fd3_df8291464c4de8",
+        "processingTimeSec": 6,
+        "inputs": [
+          {
+            "materialId": "mat_19be86fd0c7_ebcb2431cd1fd8",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be8710380_5e96425a5cc68",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be871ae34_86225416b7afe",
+        "name": "Basic Fertilizer",
+        "machineId": "mac_19be86d9ca7_3b746cfbaf8c58",
+        "processingTimeSec": 4,
+        "inputs": [
+          {
+            "materialId": "mat_19be8619e45_0fe13d4f5e9aa",
+            "items": 1
+          },
+          {
+            "materialId": "mat_19be8721924_76b2bc813f8bb8",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be8716a68_d00c3922ce0e6",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be873841c_4786ce76da84c",
+        "name": "Plant Ash",
+        "machineId": "mac_19be8331193_f48f5d5c24a51",
+        "processingTimeSec": 3,
+        "inputs": [
+          {
+            "materialId": "mat_19bfc73d1aa_f432a86f92025",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be8721924_76b2bc813f8bb8",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be877a9d3_e79989d4b08b68",
+        "name": "Charcoal Powder",
+        "machineId": "mac_19be8238f43_5615225db5c7b8",
+        "processingTimeSec": 4,
+        "inputs": [
+          {
+            "materialId": "mat_19be8217b17_337a74790e45e8",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be821c709_aecec32eef4d8",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19be8789feb_d529b456320da",
+        "name": "Glass",
+        "machineId": "mac_19be8335fd3_df8291464c4de8",
+        "processingTimeSec": 6,
+        "inputs": [
+          {
+            "materialId": "mat_19be8651b15_67928992ba248",
+            "items": 6
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be86eb8ed_2c7209d123eed",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19bea253232_f97e301bceb7a8",
+        "name": "Coal",
+        "machineId": "mac_19be85ce8c8_82bebc7d084cb8",
+        "processingTimeSec": 360,
+        "inputs": [
+          {
+            "materialId": "mat_19bea24995c_c0a1fc9215ee58",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19bea24dcb9_c8378e9c6b5be",
+            "items": 120
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19bea2673ab_977d33de77abb8",
+        "name": "Coke",
+        "machineId": "mac_19be8331193_f48f5d5c24a51",
+        "processingTimeSec": 6,
+        "inputs": [
+          {
+            "materialId": "mat_19bea24dcb9_c8378e9c6b5be",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19bea262a65_7fc8bd9cfc9988",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19bea3b934b_600183902bd5f",
+        "name": "Coke + Charcoal",
+        "machineId": "mac_19bea27e444_fc74a7b6838a8",
+        "processingTimeSec": 3,
+        "inputs": [
+          {
+            "materialId": "mat_19be821c709_aecec32eef4d8",
+            "items": 6
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19bea262a65_7fc8bd9cfc9988",
+            "items": 1
+          },
+          {
+            "materialId": "mat_19be8217b17_337a74790e45e8",
+            "items": 3
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19bea435d51_795aacc4799a18",
+        "name": "Purchase Wood",
+        "machineId": "mac_19bea4398f0_96d0c4cd96a038",
+        "processingTimeSec": 400,
+        "inputs": [
+          {
+            "materialId": "mat_19bea42ee47_78c3977eacd4e8",
+            "items": 200
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be820b99d_053e5c3443235",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19bea45baef_683ee9a6ad8e2",
+        "name": "Purchase Limestone",
+        "machineId": "mac_19bea4398f0_96d0c4cd96a038",
+        "processingTimeSec": 450,
+        "inputs": [
+          {
+            "materialId": "mat_19bea42ee47_78c3977eacd4e8",
+            "items": 600
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19be8590491_e1c257c08f77c",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19bfc75b674_2564d673c27ad",
+        "name": "Flax Fiber",
+        "machineId": "mac_19be8238f43_5615225db5c7b8",
+        "processingTimeSec": 6,
+        "inputs": [
+          {
+            "materialId": "mat_19bfc738590_a87f393f81e498",
+            "items": 1
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19bfc7583b2_7fe9ef0655d178",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19bfc827e26_7d9197b2563fc",
+        "name": "Linen Thread",
+        "machineId": "mac_19be840da8a_6c0863ca7f423",
+        "processingTimeSec": 3,
+        "inputs": [
+          {
+            "materialId": "mat_19bfc7583b2_7fe9ef0655d178",
+            "items": 3
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19bfc823a68_255b8b26de8608",
+            "items": 3
+          }
+        ],
+        "heatConsumptionP": null
+      },
+      {
+        "id": "rec_19bfc845d8c_93c1ec78e1256",
+        "name": "Linen",
+        "machineId": "mac_19be840da8a_6c0863ca7f423",
+        "processingTimeSec": 6,
+        "inputs": [
+          {
+            "materialId": "mat_19bfc823a68_255b8b26de8608",
+            "items": 6
+          }
+        ],
+        "outputs": [
+          {
+            "materialId": "mat_19bfc842fb9_054a1489379f18",
+            "items": 1
+          }
+        ],
+        "heatConsumptionP": null
+      }
+    ],
     "blueprints": []
   },
   "build": {
@@ -21,7 +1014,7 @@
     }
   },
   "workspace": {
-    "id": "ws_19c103e672c_a153384d0ce048",
+    "id": "ws_19c1059c6a2_f62dbe0b9ce1e",
     "name": "New Production 1"
   },
   "skills": {

@@ -320,7 +320,7 @@
       
       state.ui.selected.materials = null;
       state.ui.selected.machines = null;
-      renderAll();
+      AF.scheduler.invalidate({ needsRecalc: true, needsRender: true, forceRecreate: true });
       AF.ui.setStatus("Imported full state with validation.", "ok");
     } else {
       // Legacy database-only import
@@ -328,7 +328,7 @@
       saveDb();
       state.ui.selected.materials = null;
       state.ui.selected.machines = null;
-      renderAll();
+      AF.scheduler.invalidate({ needsRecalc: true, needsRender: true, forceRecreate: true });
       AF.ui.setStatus("Imported database JSON.", "ok");
     }
 

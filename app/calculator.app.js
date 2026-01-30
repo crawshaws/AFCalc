@@ -2345,7 +2345,7 @@
         
         if (!input.items || input.items <= 0) {
           recipeInfo.canUse = false;
-          recipeInfo.reason = `Input "${getMaterialById(input.materialId)?.name || 'unknown'}" has 0 or negative items`;
+          recipeInfo.reason = `Input "${AF.core.getMaterialById(input.materialId)?.name || 'unknown'}" has 0 or negative items`;
           break;
         }
         
